@@ -1,0 +1,60 @@
+# MemoryDraft — example compose deployment
+#
+# A single service with a named volume. Because the store is one SQLite file on
+# a volume, `docker compose down` keeps the memory and `down -v` does not.
+
+services:
+  memory-draft:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: digitaladapt/memory-draft:latest
+    container_name: memory-draft
+    restart: unless-stopped
+
+    # Not published to the host by default. This is an internal service: other
+    # containers reach it over the compose network by name. Publishing a port
+    # exposes the whole memory store with no authentication in front of it.
+    expose:
+      - '80'
+
+    volumes:
+      # The one piece of state. Named so it is not tied to the container
+      # lifecycle, and so `docker volume inspect` finds it by name.
+      - memory-data:/data
+
+    environment:
+      APP_ENV: prod
+      APP_DEBUG: '0'
+
+      # Injected at runtime, never baked into the image. Set this in an
+      # untracked .env file alongside this compose file.
+      APP_SECRET: ${APP_SECRET:?set APP_SECRET in .env}
+
+      MEMORY_DB_PATH: /data/memory.db
+
+      # Trimming budgets, per key. Raise the cold cap if you want a longer
+      # recovery window; raising the hot cap costs context window on every
+      # recall of a chatty key.
+      MEMORY_HOT_CAP: '20'
+      MEMORY_COLD_CAP: '200'
+
+      TZ: ${TZ:-UTC}
+
+    healthcheck:
+      test: ['CMD', 'curl', '-sf', 'http://localhost/health']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    # A runaway writer should not be able to eat the host. The store is small
+    # and the workload is bursty, so modest limits are plenty.
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+volumes:
+  memory-data:
+    name: memory-draft-data

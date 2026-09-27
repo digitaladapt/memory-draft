@@ -1,0 +1,17 @@
+# Variant: Node-enabled MemoryDraft
+#
+# Exists so a registry entry can shell out to `node` if a future tool needs it.
+# Built and published by the shared docker workflow as `:latest-node`.
+#
+# Kept deliberately thin: it inherits everything from the base image and adds
+# only the runtime.
+
+FROM digitaladapt/memory-draft:latest
+
+USER root
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends nodejs npm \
+ && rm -rf /var/lib/apt/lists/*
+
+USER www-data

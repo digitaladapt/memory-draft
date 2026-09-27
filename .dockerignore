@@ -1,0 +1,41 @@
+# .dockerignore — canonical leaf (GUIDING-LIGHT §6.2). Overwrite on sync.
+#
+# The most important line is `.env`: without it a build context would ship the
+# local environment file into the image, which is how secrets leak into layers
+# (§6.1). `.env.example` and `.env.test` are deliberately NOT ignored — they are
+# committed templates with no real values.
+
+# Secrets
+.env
+.env.local
+.env.*.local
+.env.prod
+config/secrets/prod/prod.decrypt.private.php
+
+# Version control & CI
+.git
+.gitignore
+.gitea
+
+# Dependencies and build output
+/vendor/
+/var/
+/node_modules/
+
+# Tests and tooling — not needed in the image
+/tests/
+.php-cs-fixer.cache
+.php-cs-fixer.php
+.phpunit.cache/
+phpstan.neon.dist
+phpstan-baseline.neon
+rector.php
+
+# Docs are for humans reading the repo, not for the image
+/docs/
+/README.md
+/CONTRIBUTING.md
+/CHANGELOG.md
+/SECURITY.md
+/AGENTS.md
+/CLAUDE.md

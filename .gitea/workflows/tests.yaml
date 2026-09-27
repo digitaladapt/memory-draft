@@ -1,0 +1,56 @@
+# TEMPLATE — copy to .gitea/workflows/tests.yaml and adjust the two marked values.
+#
+# This replaces the 56–65 line file that existed in each repo. The branch
+# filters stay here because a reusable workflow cannot change what its caller
+# triggers on — the caller owns the trigger.
+
+name: Tests
+
+on:
+  push:
+    branches:
+      - 'main'
+      - 'feat*'
+      - 'fix*'
+      - 'cleanup*'
+      - 'chore*'
+  pull_request:
+    branches:
+      - 'main'
+
+jobs:
+  test:
+    # Pin to a tag, not a branch. `@v1` means "the current v1"; change it here
+    # when you cut v2. Never point this at `main` — that would make CI output
+    # non-reproducible and let an upstream change break five repos at once.
+    uses: private/ci/.gitea/workflows/php-test.yaml@v1
+    with:
+      php-version: '8.5'
+
+      # ▼ ADJUST PER REPO — one of: web-app | auth-gateway | api-gateway
+      profile: api-gateway
+
+      # ▼ ADJUST PER REPO — extra PHP extensions beyond the shared baseline.
+      #   Only preauth needed this (apcu); most repos leave it empty.
+      # extensions: 'apcu'
+      # php-ini-values: 'apc.enable_cli=1'
+
+      # ▼ ADJUST PER REPO — only if a repo has genuine extra setup.
+      #   vital-pulse needs the SQLite dir to exist before tests run.
+      # pre-test-command: 'mkdir -p var/data'
+
+      # Coverage: pcov is the default (fast). The gate starts at 0 and should
+      # be ratcheted up as coverage improves — 100 is required before Rector
+      # runs (GUIDING-LIGHT §2.3).
+      coverage: 'pcov'
+      coverage-min: '0'
+
+      # Keep conformance non-blocking until the existing violations are burned
+      # down, then flip to 'true'. A gate that is red from day one is a gate
+      # everyone learns to ignore.
+      conformance-blocking: false
+
+    secrets:
+      # Required: Composer hits api.github.com and an unauthenticated run is
+      # rate-limited to 60 req/hour, which these lockfiles exceed immediately.
+      SYNC_GITHUB_TOKEN: ${{ secrets.SYNC_GITHUB_TOKEN }}

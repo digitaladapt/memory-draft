@@ -1,0 +1,25 @@
+# TEMPLATE — copy to .gitea/workflows/publish.yaml (Gitea → GitHub mirror).
+
+name: Sync GitHub
+
+on:
+  push:
+    branches:
+      - 'main'
+      - 'feat*'
+      - 'fix*'
+      - 'cleanup*'
+      - 'chore*'
+
+jobs:
+  sync:
+    uses: private/ci/.gitea/workflows/sync-github.yaml@v1
+    with:
+      sync-target: ${{ vars.SYNC_GITHUB_TARGET }}
+
+      # force-tags defaults to false so an existing GitHub tag is never
+      # silently rewritten. Turn on only if you intentionally move tags.
+      # force-tags: true
+
+    secrets:
+      SYNC_GITHUB_TOKEN: ${{ secrets.SYNC_GITHUB_TOKEN }}

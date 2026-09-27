@@ -1,0 +1,33 @@
+# phpstan.neon.dist — copied verbatim from private/ci configs/ (GUIDING-LIGHT §2.2).
+# This is a LEAF file: overwrite it on sync, never merge it.
+
+parameters:
+    level: 6
+
+    paths:
+        - src
+        - tests
+
+    reportWrongPhpDocTypeInVarTag: true
+    reportAnyTypeWideningInVarTag: true
+    reportStaticMethodSignatures: true
+    reportIgnoresWithoutComments: true
+    reportUnmatchedIgnoredErrors: true
+    checkFunctionNameCase: true
+    checkUninitializedProperties: true
+    checkMissingOverrideMethodAttribute: true
+    checkMissingOverridePropertyAttribute: true
+    checkStrictPrintfPlaceholderTypes: true
+    checkDynamicProperties: true
+
+    bootstrapFiles:
+        - tests/bootstrap.php
+
+includes:
+    - phpstan-baseline.neon
+
+    # Extension, opted in per project as the shared config instructs. It teaches
+    # PHPStan PHPUnit's lifecycle (setUp() runs before each test), which is what
+    # makes a property assigned there count as initialized.
+    - vendor/phpstan/phpstan-phpunit/extension.neon
+    - vendor/phpstan/phpstan-phpunit/rules.neon

@@ -1,0 +1,29 @@
+# TEMPLATE — copy to .gitea/workflows/develop.yaml (push to main → rolling tag).
+
+name: Push Develop
+
+on:
+  push:
+    branches:
+      - 'main'
+
+jobs:
+  docker:
+    uses: private/ci/.gitea/workflows/docker-publish.yaml@v1
+    with:
+      mode: develop
+      # Passed explicitly rather than resolved inside the shared workflow:
+      # `vars` context behaviour inside a reusable workflow is not something to
+      # rely on across Gitea versions, so the caller reads it where it is
+      # unambiguous and hands over a plain string.
+      image-target: ${{ vars.DOCKERHUB_TARGET }}
+
+      # ▼ ADJUST PER REPO — task-weaver is the only repo that uses bake,
+      #   because it publishes two variants (controller + worker) from one
+      #   Dockerfile. Everyone else leaves this at 'action'.
+      # build-backend: 'bake'
+      # bake-file: 'docker-bake.hcl'
+
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
