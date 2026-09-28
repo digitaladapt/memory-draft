@@ -1,4 +1,4 @@
-# Dockerfile — Memory Loom
+# Dockerfile — MemoryDraft
 #
 # Base image is pinned (GUIDING-LIGHT §6.4): never `:latest`, because a base
 # that moves under a build makes two builds of the same commit differ.
@@ -6,6 +6,10 @@ FROM dunglas/frankenphp:1-php8.5-trixie AS base
 
 # ── Build stage ───────────────────────────────────────────────────────────────
 FROM base AS build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        sqlite3 unzip \
+    && rm -rf /var/lib/apt/lists/*
 
 # Composer from its own pinned image rather than a curl | php, so the version is
 # explicit and reproducible.
@@ -25,8 +29,8 @@ COPY . .
 # depend on, or bake in, any value that comes from the runtime environment
 # (§8.12). Real secrets are injected at run time only.
 RUN composer dump-env prod --empty \
- && composer run-script auto-scripts --no-interaction \
- && APP_ENV=prod APP_DEBUG=0 php -d memory_limit=-1 bin/console cache:warmup
+ && DEFAULT_URI=http:// composer run-script auto-scripts --no-interaction \
+ && APP_ENV=prod APP_DEBUG=0 DEFAULT_URI=http:// php -d memory_limit=-1 bin/console cache:warmup
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM base AS runtime

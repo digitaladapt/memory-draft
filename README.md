@@ -1,4 +1,4 @@
-# Memory Loom
+# MemoryDraft
 
 A small, self-hosted **memory service** for language models: keyword-addressed,
 sentence-granular, revision-checked, and designed so that nothing is lost
@@ -42,8 +42,8 @@ deploy  (2 hot, revision 1)
 ### Docker
 
 ```bash
-docker build -t memory-loom .
-docker run -p 8080:80 -v memory-data:/data memory-loom
+docker build -t memory-draft .
+docker run -p 8080:80 -v memory-data:/data memory-draft
 ```
 
 The store lives on a volume, so memory outlives the container.

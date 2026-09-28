@@ -1,6 +1,6 @@
 {
-    "name": "digitaladapt/memory-loom",
-    "description": "Memory Loom - keyword-addressed memory service with revisions, near-match resolution, and cold storage",
+    "name": "digitaladapt/memory-draft",
+    "description": "MemoryDraft - keyword-addressed memory service with revisions, near-match resolution, and cold storage",
     "type": "project",
     "license": "MIT",
     "require": {

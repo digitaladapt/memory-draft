@@ -11,7 +11,7 @@ expect to happen instead.
 
 ## Scope
 
-Memory Loom is an **internal service**. It is designed to sit on a private
+MemoryDraft is an **internal service**. It is designed to sit on a private
 network, reached by other containers, and behind whatever authentication the
 deployment puts in front of it. It does not implement user accounts and is not
 designed to face the public internet.
