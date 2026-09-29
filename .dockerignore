@@ -31,6 +31,11 @@ phpstan.neon.dist
 phpstan-baseline.neon
 rector.php
 
+# Never ship a developer's local VERSION file into the image: the build stamps
+# its own from the APP_VERSION build arg, and an inherited file would silently
+# report the wrong version.
+VERSION
+
 # Docs are for humans reading the repo, not for the image
 /docs/
 /README.md

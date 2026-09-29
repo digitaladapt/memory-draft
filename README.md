@@ -39,6 +39,24 @@ deploy  (2 hot, revision 1)
   - [just now] Rollback is one command.
 ```
 
+### HTTP
+
+The same operations are available over HTTP; the commands above and the
+endpoints below are two transports onto one service, so their behaviour cannot
+diverge.
+
+```bash
+curl -s localhost/api/remember \
+  -H 'Content-Type: application/json' \
+  -d '{"items":[{"key":"deploy","sentences":"Uses blue-green deploys."}]}'
+
+curl -s localhost/api/recall \
+  -H 'Content-Type: application/json' \
+  -d '{"queries":[{"key":"deploy","depth":2}]}'
+
+curl -s localhost/api/keys
+```
+
 ### Docker
 
 ```bash
@@ -61,6 +79,57 @@ The store lives on a volume, so memory outlives the container.
 Useful flags: `--depth N` (sentences per key), `--cold` (include the cold tier),
 `--pin` (exempt from trimming), `--mode replace` (retire current sentences),
 `--revision N` (write against a revision you read), `--json`.
+
+## HTTP API
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/recall` | Look up one or more keywords |
+| `POST /api/remember` | Store sentences under one or more keywords |
+| `GET /api/keys` | Enumerate the keyspace, with aliases |
+| `GET /api/stats` | Counts and active trimming budgets |
+| `DELETE /api/keys/{key}` | Permanently delete a key |
+
+Bodies mirror the service call, and each DTO's constraints are part of the
+contract — a blank key or a `mode` outside `append|replace` is a `422` before
+the service is entered.
+
+```jsonc
+// POST /api/recall
+{"queries": [{"key": "deploy", "depth": 2, "includeCold": false}]}
+
+// POST /api/remember
+{"items": [{"key": "deploy", "sentences": "One. Two.", "mode": "append", "pin": false, "revision": 8}]}
+```
+
+`sentences` accepts either a prose string (split into sentences) or an explicit
+list (which skips the splitter). Responses are the service's own payloads: a
+recall returns `hits` and `misses` separately, and a write returns per-key
+results including anything retired, demoted or purged.
+
+Two status codes are worth stating because they are choices, not defaults:
+
+- **A recall that matches nothing is `200`, not `404`.** The miss is the answer,
+  and it arrives with the near-miss suggestions a `404` would have thrown away.
+- **`DELETE` of an unknown key is `404`.** There, the absence is a caller
+  mistake worth surfacing.
+
+### Service endpoints
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /about` | Application name and version |
+| `GET /health` | Liveness — the process is up; never touches the store |
+| `GET /ready` | Readiness — the store can be opened and read; `503` if not |
+
+The split is deliberate (GUIDING-LIGHT §8.4). A liveness probe that checked its
+dependencies would turn a brief store blip into a restart storm: every replica is
+judged unhealthy at once, the orchestrator restarts them all, and the outage
+outlives its cause. So `/health` answers without the store, and `/ready` is the
+one that opens it. The Docker `HEALTHCHECK` hits `/health`.
+
+`/about` reports the version stamped at build time from the `APP_VERSION` build
+arg; an unstamped build answers `unknown` rather than guessing (§8.13).
 
 ## Concepts
 
@@ -141,10 +210,13 @@ composer cs-fix   # apply style fixes
 ```
 src/
   Command/          console commands (remember, recall, keys, stats, forget)
+  Controller/       HTTP entry points; thin, delegate to the service
   Domain/           pure models: keys, sentences, tiers, splitting, matching
+  Domain/Dto/       request and service payloads (validated on the way in)
   Service/          application logic; the only thing a caller needs to know
   Infrastructure/   SQLite storage
 tests/Unit/         the behaviour, exercised the way a caller would use it
+tests/Functional/   every endpoint, exercised over HTTP as a caller would
 docs/design/        SPEC.md and design notes
 docs/examples/      annotated compose.yaml and .env.example
 ```

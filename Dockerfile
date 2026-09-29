@@ -25,6 +25,14 @@ RUN composer install --no-dev --no-scripts --no-interaction --prefer-dist \
 
 COPY . .
 
+# The application version, stamped into a file at build time and read by
+# `/about` (§8.13). CI passes `APP_VERSION` from the git tag; a local build
+# without it gets `dev`, which `/about` reports as `unknown` rather than
+# inventing a version. Never derived at request time — running a command in a
+# request path forks a process and depends on tooling the image does not carry.
+ARG APP_VERSION=dev
+RUN printf '%s' "${APP_VERSION}" > VERSION
+
 # Compile the production container with an empty environment: the build must not
 # depend on, or bake in, any value that comes from the runtime environment
 # (§8.12). Real secrets are injected at run time only.

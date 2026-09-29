@@ -19,3 +19,9 @@
 /phpunit.xml
 /.phpunit.cache/
 ###< phpunit/phpunit ###
+
+# Stamped at image build time from the APP_VERSION build arg, not versioned:
+# a committed copy would be a second source of truth for "what build is this?"
+# and would silently outlive the tag it came from. Local builds need no file —
+# /about reports `unknown` without one.
+/VERSION

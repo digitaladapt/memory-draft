@@ -287,6 +287,41 @@ Recorded because each is a trap the PHP implementation would have hit too.
 
 ## 8. API surface
 
+### HTTP
+
+A thin transport over the service; every rule below holds identically for the
+console and the wire, because neither re-decides anything.
+
+```
+POST   /api/recall        {"queries": [{"key": "x", "depth": 2, "includeCold": false}]}
+POST   /api/remember      {"items":   [{"key": "x", "sentences": "...", "mode": "append",
+                                        "pin": false, "revision": 8}]}
+GET    /api/keys          ?pattern=&limit=
+GET    /api/stats
+DELETE /api/keys/{key}
+
+GET    /about             name + build-stamped version
+GET    /health            liveness  — never touches the store
+GET    /ready             readiness — opens and reads the store; 503 if it cannot
+```
+
+`/health` and `/ready` sit at the **root**, per §8.4, and because the Docker
+`HEALTHCHECK` and the example compose file already probe `/health` there.
+
+**A recall miss is `200`, not `404`.** The miss is the answer — it comes with
+near-miss suggestions, and a `404` would discard them and make a lookup that
+missed indistinguishable from one that could not be served. `DELETE` of an
+unknown key *is* `404`, because there the absence is a caller mistake.
+
+**`DELETE` resolves spelling variants** through the same escalating match as a
+read. That is deliberate: the store's identity model says `ContextShuttle` and
+`context-shuttle` are one key, and a delete that silently found nothing over a
+hyphen would be the worst outcome in the whole design.
+
+Bodies are bound with `#[MapRequestPayload]` / `#[MapQueryString]`, so the DTO
+constraints are the contract. A blank key, an unknown `mode`, an out-of-range
+`limit` or an empty batch is a `422` before the service is entered.
+
 ### Console
 
 ```
