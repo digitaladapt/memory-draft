@@ -76,7 +76,8 @@ The store lives on a volume, so memory outlives the container.
 | `memory:stats` | Counts and active trimming budgets |
 | `memory:forget <key>` | Permanently delete a key |
 
-Useful flags: `--depth N` (sentences per key), `--cold` (include the cold tier),
+Useful flags: `--depth N` (unpinned sentences per key — pinned are always returned),
+`--cold` (include the cold tier),
 `--pin` (exempt from trimming), `--mode replace` (retire current sentences),
 `--revision N` (write against a revision you read), `--json`.
 
@@ -147,6 +148,13 @@ Above `MEMORY_HOT_CAP` unpinned sentences per key, the oldest are **demoted to
 cold**, not deleted. Cold sentences are retrievable with `--cold` and are listed
 by `memory:keys`. Only past `MEMORY_COLD_CAP` — a much larger budget — is
 anything destroyed, and that deletion is reported on the write that caused it.
+
+**Pinned sentences sit outside both budgets — and outside `depth`.** They are
+the facts you asked not to age out, so recall returns *all* of them however
+shallow the request: `depth` bounds chatter, never the durable ones. A key whose
+durable half is nine sentences answers a two-sentence question with those nine
+plus two more, and `pinned` is reported on both `memory:keys` and every recall
+so the counts are never ambiguous.
 
 Caps are **per key**, because what actually threatens a context window is how
 many sentences one key returns. Keys are namespaced by convention

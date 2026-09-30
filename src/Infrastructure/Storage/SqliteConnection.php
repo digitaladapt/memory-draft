@@ -56,17 +56,57 @@ final class SqliteConnection
         $pdo->exec('PRAGMA busy_timeout=10000');
         $pdo->exec('PRAGMA foreign_keys=ON');
 
-        $pdo->exec(Schema::SQL);
-        self::migrate($pdo);
-
-        $statement = $pdo->prepare(
-            'INSERT OR IGNORE INTO meta (key, value) VALUES (:key, :value)'
-        );
-        $statement->execute(['key' => 'schema_version', 'value' => (string) Schema::VERSION]);
+        // Opening the store must not *write* when there is nothing to do.
+        // Schema DDL and the meta upsert are writes, and a write taken here
+        // would collide with any concurrent writer — so a read that merely
+        // needed a connection could fail with "database is locked" for the
+        // full busy_timeout. Establishing the schema is therefore a one-time
+        // act, gated on the recorded version rather than repeated per open.
+        if (Schema::VERSION !== self::recordedVersion($pdo)) {
+            self::bootstrap($pdo);
+        }
 
         $this->pdo = $pdo;
 
         return $this->pdo;
+    }
+
+    /**
+     * The schema version recorded in the database, or null when it has never
+     * been stamped (a brand-new file, or one written before versioning).
+     *
+     * A read, deliberately: it is what lets {@see pdo()} answer "is there
+     * anything to do?" without taking a write lock to find out.
+     */
+    private static function recordedVersion(\PDO $pdo): ?int
+    {
+        try {
+            $row = $pdo->query("SELECT value FROM meta WHERE key = 'schema_version'")->fetch();
+        } catch (\PDOException) {
+            // No meta table yet: nothing has ever been stamped.
+            return null;
+        }
+
+        return false === $row ? null : (int) $row['value'];
+    }
+
+    /**
+     * Create the tables, bring an older database forward, then index.
+     *
+     * The order is load-bearing and matches the spec: tables exist so the
+     * migration can inspect them, the migration adds columns so the indexes
+     * have something to name, and only then are indexes created. Creating an
+     * index on a column that an older database does not have yet fails the
+     * whole open.
+     */
+    private static function bootstrap(\PDO $pdo): void
+    {
+        $pdo->exec(Schema::TABLES);
+        self::migrate($pdo);
+        $pdo->exec(Schema::INDEXES);
+
+        $pdo->prepare('INSERT OR IGNORE INTO meta (key, value) VALUES (:key, :value)')
+            ->execute(['key' => 'schema_version', 'value' => (string) Schema::VERSION]);
     }
 
     /**

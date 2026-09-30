@@ -77,7 +77,7 @@ The unit of storage is the **sentence**, not the entry. Consequences:
   slightly each time.
 - "A sentence exists exactly once per key" is enforceable. With blobs, the same
   fact asserted twice produces a growing paragraph.
-- The caller can retrieve *k* sentences (`--depth`) with predictable cost.
+- The caller can retrieve *k* sentences (`--depth`) with predictable cost. **`depth` bounds unpinned sentences only.** Pinned sentences are returned in full however shallow the request, because `depth` exists to bound chatter and protecting the caller from the facts it explicitly refused to let age out is the opposite of the point (§5.2).
 
 Prose is split heuristically, deliberately conservatively: abbreviations,
 initials and decimals survive (`Dr. Smith`, `J. Adams`, `3.50`). An explicit
@@ -211,7 +211,10 @@ facts, without any signal that it happened. Two mitigations, both needed:
 
 - **`--pin`** exempts durable facts (constraints, identity, preferences).
   Pinned sentences are excluded from the cap calculation entirely, so pinning
-  cannot itself push unpinned facts out.
+  cannot itself push unpinned facts out — and they are exempt from `depth`
+  too, so a shallow recall returns every pinned fact rather than a prefix of
+  them. A key whose durable half is nine sentences must not answer a
+  two-sentence question by hiding seven of them.
 - **Demotions are reported on the write**, so the caller sees what it just
   stopped guaranteeing at the moment it stops guaranteeing it.
 

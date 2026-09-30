@@ -440,6 +440,42 @@ final class MemoryServiceTest extends TestCase
         self::assertContains('project-alpha', $keys[0]['aliases']);
     }
 
+    public function testPinnedSentencesAreReturnedRegardlessOfDepth(): void
+    {
+        // A key whose durable half is longer than the requested depth must not
+        // answer with a prefix of it. `depth` bounds chatter, not the facts a
+        // caller has explicitly said must not age out — this is the "asked for
+        // soul, got two of nine" failure.
+        $this->service->remember([new RememberItem(
+            key: 'soul',
+            sentences: 'Pinned one. Pinned two. Pinned three. Pinned four. Pinned five.',
+            pin: true,
+        )]);
+        $this->service->remember([new RememberItem(key: 'soul', sentences: 'Chatter one. Chatter two.')]);
+
+        $hit = $this->recallOne('soul', depth: 2);
+
+        self::assertSame(5, $hit['pinned'], 'the pinned count is reported, not implied');
+        self::assertSame(7, $hit['shown'], 'all five pinned plus the two requested');
+        self::assertSame(
+            ['Pinned one.', 'Pinned two.', 'Pinned three.', 'Pinned four.', 'Pinned five.', 'Chatter one.', 'Chatter two.'],
+            $this->texts($hit),
+            'pinned facts come first and none are dropped',
+        );
+    }
+
+    public function testKeysReportsPinnedCountPerKey(): void
+    {
+        $this->service->remember([new RememberItem(key: 'soul', sentences: 'Durable one. Durable two.', pin: true)]);
+        $this->service->remember([new RememberItem(key: 'soul', sentences: 'Noise.')]);
+
+        $keys = $this->service->keys();
+
+        self::assertSame('soul', $keys[0]['key']);
+        self::assertSame(2, $keys[0]['pinned'], 'the durable half is visible without recalling the key');
+        self::assertSame(3, $keys[0]['hot']);
+    }
+
     public function testStatsReportsCapsAndCounts(): void
     {
         $service = self::service(hotCap: 7, coldCap: 9);

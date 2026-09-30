@@ -221,6 +221,7 @@ final class MemoryControllerTest extends WebTestCase
         self::assertCount(1, $keys);
         self::assertSame('deploy', $keys[0]['key']);
         self::assertSame(2, $keys[0]['hot']);
+        self::assertSame(0, $keys[0]['pinned']);
         self::assertSame(1, $keys[0]['revision']);
     }
 
@@ -391,6 +392,35 @@ final class MemoryControllerTest extends WebTestCase
             'queries' => [['key' => 'deploy', 'depth' => 4]],
         ]))['hits'][0];
         self::assertSame(4, $deep['shown']);
+    }
+
+    /**
+     * `depth` bounds unpinned sentences only. Pinned facts are the ones a
+     * caller explicitly asked not to age out, so a shallow recall returns all
+     * of them and the requested number of unpinned ones beside them.
+     */
+    public function testPinnedSentencesSurviveAShallowDepth(): void
+    {
+        $client = $this->client();
+
+        $this->post($client, '/api/remember', [
+            'items' => [
+                ['key' => 'soul', 'sentences' => 'Pinned one. Pinned two. Pinned three.', 'pin' => true],
+                ['key' => 'soul', 'sentences' => 'Noise one. Noise two.'],
+            ],
+        ]);
+        self::assertResponseIsSuccessful();
+
+        $hit = $this->decode($this->post($client, '/api/recall', [
+            'queries' => [['key' => 'soul', 'depth' => 1]],
+        ]))['hits'][0];
+
+        self::assertSame(3, $hit['pinned']);
+        self::assertSame(4, $hit['shown'], 'three pinned plus the one requested');
+        self::assertSame(
+            ['Pinned one.', 'Pinned two.', 'Pinned three.', 'Noise one.'],
+            array_column($hit['entries'], 'text'),
+        );
     }
 
     /**
