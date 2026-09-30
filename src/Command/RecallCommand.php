@@ -36,7 +36,10 @@ final class RecallCommand extends Command
     {
         $this
             ->addArgument('key', InputArgument::REQUIRED | InputArgument::IS_ARRAY, 'Keyword(s) to look up')
-            ->addOption('depth', 'd', InputOption::VALUE_REQUIRED, 'Sentences per keyword', '2')
+            // The default is the service's own, not a literal. It was a literal
+            // (`2`) and drifted the moment the service's default changed, which
+            // is how `memory:recall soul` kept answering with two of nine facts.
+            ->addOption('depth', 'd', InputOption::VALUE_REQUIRED, 'Unpinned sentences per keyword (pinned are always returned)', (string) MemoryService::DEFAULT_DEPTH)
             ->addOption('cold', null, InputOption::VALUE_NONE, 'Include the cold tier')
             ->addOption('json', null, InputOption::VALUE_NONE, 'Emit raw JSON');
     }

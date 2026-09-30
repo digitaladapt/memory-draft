@@ -33,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `memory:keys` and every recall hit now report a `pinned` count, so a key that
   holds more than the hot cap (because its sentences are pinned) is
   self-explaining rather than looking like a cap violation.
+- The default recall depth is 12, not 2. A caller that did not ask for a
+  specific depth now gets the whole current hot window instead of a two-line
+  prefix of it — the default answer to "what do I know about X?" should be the
+  answer, not a sample of it. Pinned sentences are returned on top of this.
 
 ### Added
 

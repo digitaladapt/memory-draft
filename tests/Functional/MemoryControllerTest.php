@@ -424,6 +424,37 @@ final class MemoryControllerTest extends WebTestCase
     }
 
     /**
+     * A recall that does not name a depth returns the key's whole current
+     * window, not a two-sentence prefix of it.
+     *
+     * The service's default was 2, which made the cheapest question a model can
+     * ask — "what do I know about X?" with no arguments — answer with a sample
+     * of the answer. `shown` used to be capped at 2 against a `hot` in double
+     * digits, so the caller could not tell a two-sentence key from a fourteen-
+     * sentence one it had just been shown two lines of.
+     */
+    public function testRecallWithoutAnExplicitDepthReturnsTheWholeCurrentWindow(): void
+    {
+        $client = $this->client();
+
+        $this->post($client, '/api/remember', [
+            'items' => [['key' => 'soul', 'sentences' => 'One. Two. Three. Four. Five. Six. Seven.']],
+        ]);
+        self::assertResponseIsSuccessful();
+
+        $hit = $this->decode($this->post($client, '/api/recall', [
+            'queries' => [['key' => 'soul']],
+        ]))['hits'][0];
+
+        self::assertSame(7, $hit['hot']);
+        self::assertSame(7, $hit['shown'], 'the default depth covers a whole hot window');
+        self::assertSame(
+            ['One.', 'Two.', 'Three.', 'Four.', 'Five.', 'Six.', 'Seven.'],
+            array_column($hit['entries'], 'text'),
+        );
+    }
+
+    /**
      * A key may be namespaced (`project:alpha`), and the delete route accepts
      * the colon as part of the path segment.
      */

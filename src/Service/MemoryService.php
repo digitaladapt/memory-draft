@@ -32,7 +32,17 @@ use App\Infrastructure\Storage\MemoryRepository;
  */
 final class MemoryService
 {
-    public const DEFAULT_DEPTH = 2;
+    /**
+     * Sentences returned when a caller does not ask for a specific depth.
+     *
+     * Sized to cover a typical hot window rather than the old minimum of 2, so
+     * the default answer to "what do I know about X?" is the key's current
+     * knowledge rather than a two-sentence prefix of it. A caller that wants
+     * fewer says so; a caller that did not read the docs should not be shown a
+     * third of the answer. Pinned sentences are returned in addition to this,
+     * whatever it is set to.
+     */
+    public const DEFAULT_DEPTH = 12;
 
     public function __construct(
         private readonly MemoryRepository $repository,

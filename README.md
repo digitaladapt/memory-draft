@@ -39,6 +39,9 @@ deploy  (2 hot, revision 1)
   - [just now] Rollback is one command.
 ```
 
+Recall defaults to the whole current window (up to 12 sentences per key, plus
+every pinned one), so the common case needs no `--depth` at all.
+
 ### HTTP
 
 The same operations are available over HTTP; the commands above and the
@@ -107,6 +110,11 @@ the service is entered.
 list (which skips the splitter). Responses are the service's own payloads: a
 recall returns `hits` and `misses` separately, and a write returns per-key
 results including anything retired, demoted or purged.
+
+`depth` defaults to 12 and bounds **unpinned** sentences only; pinned sentences
+are always returned in full (see Concepts → Two tiers). Each hit reports its
+`pinned` count alongside `hot`/`cold`/`backfilled`, so a `shown` larger than the
+requested depth is explained rather than surprising.
 
 Two status codes are worth stating because they are choices, not defaults:
 

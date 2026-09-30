@@ -77,7 +77,7 @@ The unit of storage is the **sentence**, not the entry. Consequences:
   slightly each time.
 - "A sentence exists exactly once per key" is enforceable. With blobs, the same
   fact asserted twice produces a growing paragraph.
-- The caller can retrieve *k* sentences (`--depth`) with predictable cost. **`depth` bounds unpinned sentences only.** Pinned sentences are returned in full however shallow the request, because `depth` exists to bound chatter and protecting the caller from the facts it explicitly refused to let age out is the opposite of the point (§5.2).
+- The caller can retrieve *k* sentences (`--depth`) with predictable cost. **`depth` bounds unpinned sentences only.** Pinned sentences are returned in full however shallow the request, because `depth` exists to bound chatter and protecting the caller from the facts it explicitly refused to let age out is the opposite of the point (§5.2). `depth` defaults to 12 — a whole typical hot window — so the answer to a question that did not specify one is the key's current knowledge rather than a two-sentence prefix of it.
 
 Prose is split heuristically, deliberately conservatively: abbreviations,
 initials and decimals survive (`Dr. Smith`, `J. Adams`, `3.50`). An explicit
@@ -296,7 +296,7 @@ A thin transport over the service; every rule below holds identically for the
 console and the wire, because neither re-decides anything.
 
 ```
-POST   /api/recall        {"queries": [{"key": "x", "depth": 2, "includeCold": false}]}
+POST   /api/recall        {"queries": [{"key": "x", "depth": 12, "includeCold": false}]}
 POST   /api/remember      {"items":   [{"key": "x", "sentences": "...", "mode": "append",
                                         "pin": false, "revision": 8}]}
 GET    /api/keys          ?pattern=&limit=
@@ -342,7 +342,7 @@ destructive operation cannot be reached by a typo in a write.
 ### Service
 
 ```php
-$memory->recall([['key' => 'x', 'depth' => 2, 'includeCold' => false]]);
+$memory->recall([['key' => 'x', 'depth' => 12, 'includeCold' => false]]);
 $memory->remember([new RememberItem(key: 'x', sentences: '...', revision: 8)]);
 $memory->keys(pattern: '', limit: 200);
 $memory->stats();
