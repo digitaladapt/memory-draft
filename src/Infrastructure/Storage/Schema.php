@@ -38,7 +38,17 @@ final class Schema
 {
     public const VERSION = 1;
 
-    public const SQL = <<<'SQL'
+    /**
+     * Table definitions only. Applied before {@see INDEXES} and before
+     * {@see SqliteConnection::migrate()}, so an
+     * older database gains its new columns before any index names them.
+     *
+     * Keeping DDL ordered (tables → rows migrated → indexes) is not tidiness:
+     * an index on a column that does not exist yet fails, and the database then
+     * cannot be opened at all. That ordering was a bug the prototype hit and
+     * the reason it is called out in the spec.
+     */
+    public const TABLES = <<<'SQL'
         CREATE TABLE IF NOT EXISTS memory_keys (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             key         TEXT    NOT NULL UNIQUE,
@@ -47,8 +57,6 @@ final class Schema
             created_at  TEXT    NOT NULL,
             updated_at  TEXT    NOT NULL
         );
-
-        CREATE INDEX IF NOT EXISTS idx_keys_match ON memory_keys(match_key);
 
         CREATE TABLE IF NOT EXISTS sentences (
             id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -63,13 +71,6 @@ final class Schema
             backfilled        INTEGER NOT NULL DEFAULT 0
         );
 
-        CREATE INDEX IF NOT EXISTS idx_sentences_key_tier
-            ON sentences(key_id, tier);
-        CREATE INDEX IF NOT EXISTS idx_sentences_order
-            ON sentences(key_id, tier, backfilled, batch);
-        CREATE INDEX IF NOT EXISTS idx_sentences_hash
-            ON sentences(key_id, text_hash);
-
         CREATE TABLE IF NOT EXISTS aliases (
             id        INTEGER PRIMARY KEY AUTOINCREMENT,
             key_id    INTEGER NOT NULL REFERENCES memory_keys(id) ON DELETE CASCADE,
@@ -81,5 +82,21 @@ final class Schema
             key   TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+        SQL;
+
+    /**
+     * Index definitions, applied last. Every column named here must already
+     * exist — which is only true once the tables are created and any pending
+     * migration has run.
+     */
+    public const INDEXES = <<<'SQL'
+        CREATE INDEX IF NOT EXISTS idx_keys_match ON memory_keys(match_key);
+
+        CREATE INDEX IF NOT EXISTS idx_sentences_key_tier
+            ON sentences(key_id, tier);
+        CREATE INDEX IF NOT EXISTS idx_sentences_order
+            ON sentences(key_id, tier, backfilled, batch);
+        CREATE INDEX IF NOT EXISTS idx_sentences_hash
+            ON sentences(key_id, text_hash);
         SQL;
 }

@@ -321,7 +321,7 @@ final class MemoryRepository
 
         $unpinned = array_values(array_filter($rows, static fn (array $r): bool => 0 === (int) $r['pinned']));
         $pinnedCount = \count($rows) - \count($unpinned);
-        $keepable = max(0, $this->hotCap - $pinnedCount);
+        $keepable = max(0, $this->hotCap() - $pinnedCount);
         $excess = \count($unpinned) - $keepable;
 
         if ($excess <= 0) {
@@ -347,7 +347,8 @@ final class MemoryRepository
      */
     public function pruneCold(int $keyId): array
     {
-        if ($this->coldCap <= 0) {
+        $coldCap = $this->coldCap();
+        if ($coldCap <= 0) {
             return [];
         }
 
@@ -358,7 +359,7 @@ final class MemoryRepository
              ORDER BY batch DESC, id DESC LIMIT -1 OFFSET :offset"
         );
         $statement->bindValue('key_id', $keyId, \PDO::PARAM_INT);
-        $statement->bindValue('offset', $this->coldCap, \PDO::PARAM_INT);
+        $statement->bindValue('offset', $coldCap, \PDO::PARAM_INT);
         $statement->execute();
         $rows = $statement->fetchAll();
 
@@ -395,16 +396,34 @@ final class MemoryRepository
 
         $tierList = implode(', ', array_map(static fn (Tier $t): string => "'".$t->value."'", $tiers));
         $backfilledClause = $includeBackfilled ? '' : ' AND backfilled = 0';
+        $ordering = 'ORDER BY pinned DESC, backfilled ASC, batch DESC, id ASC';
+        $depth = max(0, $depth);
 
-        $statement = $this->connection->pdo()->prepare(
+        // Pinned sentences are *not* subject to `depth`. They are the durable
+        // facts the caller asked not to age out, and `depth` exists to bound a
+        // context window against chatter — so a small `depth` silently hiding
+        // pinned facts is exactly the failure ("I asked for soul and got two of
+        // nine") this avoids. Everything else is capped as before.
+        $pinned = $this->connection->pdo()->prepare(
             "SELECT * FROM sentences
-             WHERE key_id = :key_id AND tier IN ({$tierList}){$backfilledClause}
-             ORDER BY pinned DESC, backfilled ASC, batch DESC, id ASC
-             LIMIT :depth"
+             WHERE key_id = :key_id AND tier IN ({$tierList}){$backfilledClause} AND pinned = 1
+             {$ordering}"
         );
-        $statement->bindValue('key_id', $keyId, \PDO::PARAM_INT);
-        $statement->bindValue('depth', $depth, \PDO::PARAM_INT);
-        $statement->execute();
+        $pinned->execute(['key_id' => $keyId]);
+        $rows = $pinned->fetchAll();
+
+        if ($depth > 0) {
+            $unpinned = $this->connection->pdo()->prepare(
+                "SELECT * FROM sentences
+                 WHERE key_id = :key_id AND tier IN ({$tierList}){$backfilledClause} AND pinned = 0
+                 {$ordering}
+                 LIMIT :depth"
+            );
+            $unpinned->bindValue('key_id', $keyId, \PDO::PARAM_INT);
+            $unpinned->bindValue('depth', $depth, \PDO::PARAM_INT);
+            $unpinned->execute();
+            $rows = array_merge($rows, $unpinned->fetchAll());
+        }
 
         return array_map(
             static fn (array $row): Sentence => new Sentence(
@@ -418,12 +437,12 @@ final class MemoryRepository
                 writtenRevision: (int) $row['written_revision'],
                 backfilled: 1 === (int) $row['backfilled'],
             ),
-            $statement->fetchAll()
+            $rows
         );
     }
 
     /**
-     * @return array{hot: int, cold: int, backfilled: int}
+     * @return array{hot: int, cold: int, pinned: int, backfilled: int}
      */
     public function counts(int $keyId): array
     {
@@ -431,15 +450,17 @@ final class MemoryRepository
             "SELECT
                 SUM(CASE WHEN tier = 'hot' THEN 1 ELSE 0 END) AS hot,
                 SUM(CASE WHEN tier = 'cold' THEN 1 ELSE 0 END) AS cold,
+                SUM(CASE WHEN pinned = 1 THEN 1 ELSE 0 END) AS pinned,
                 SUM(CASE WHEN backfilled = 1 THEN 1 ELSE 0 END) AS backfilled
              FROM sentences WHERE key_id = :key_id"
         );
         $statement->execute(['key_id' => $keyId]);
-        $row = $statement->fetch() ?: ['hot' => 0, 'cold' => 0, 'backfilled' => 0];
+        $row = $statement->fetch() ?: ['hot' => 0, 'cold' => 0, 'pinned' => 0, 'backfilled' => 0];
 
         return [
             'hot' => (int) ($row['hot'] ?? 0),
             'cold' => (int) ($row['cold'] ?? 0),
+            'pinned' => (int) ($row['pinned'] ?? 0),
             'backfilled' => (int) ($row['backfilled'] ?? 0),
         ];
     }
@@ -572,11 +593,14 @@ final class MemoryRepository
 
     public function hotCap(): int
     {
-        return $this->hotCap;
+        // A negative cap is meaningless and a zero one would demote every hot
+        // sentence, so it is reported as-is but treated as "no budget" by the
+        // trimming paths rather than inverting their arithmetic.
+        return max(0, $this->hotCap);
     }
 
     public function coldCap(): int
     {
-        return $this->coldCap;
+        return max(0, $this->coldCap);
     }
 }
