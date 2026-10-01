@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Re-stating a pinned fact no longer silently un-pins it.** `pin` is now
+  tri-state: omitted leaves an existing pin exactly as it is, `true` pins, and
+  `false` un-pins. It was a plain boolean, so an omitted `pin` and an explicit
+  `false` were one and the same instruction — and because writing an existing
+  sentence *renews* it, the canonical way to say "this is still true" also
+  discarded the pin, quietly turning a durable fact into a disposable one. The
+  loss only surfaced later, when trimming demoted the fact. There was also no
+  way to take a pin back except `forget`, which destroys the history the store
+  keeps; `pin: false` now does it without destroying anything.
 - **Pinned sentences are no longer truncated by `depth`.** A shallow recall now
   returns *every* pinned sentence plus `depth` unpinned ones, because `depth`
   exists to bound chatter and hiding the facts a caller explicitly pinned is
@@ -30,6 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `memory:remember`'s `--pin` is now negatable: `--pin` pins, `--no-pin`
+  un-pins, and omitting it leaves an existing pin alone. `--pin` was a plain
+  flag, so it could only ever assert "pin" and an un-pin was unreachable from
+  the console.
 - `memory:keys` and every recall hit now report a `pinned` count, so a key that
   holds more than the hot cap (because its sentences are pinned) is
   self-explaining rather than looking like a cap violation.

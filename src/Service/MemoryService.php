@@ -172,6 +172,8 @@ final class MemoryService
                         text: (string) $sentence,
                         batch: $batch,
                         revision: $newRevision,
+                        // Tri-state: null means "no instruction about the
+                        // pin", which on a renewal preserves the existing one.
                         pinned: $item->pin,
                         backfilled: $backfilled,
                     );

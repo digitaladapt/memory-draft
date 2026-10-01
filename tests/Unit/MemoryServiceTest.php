@@ -525,4 +525,46 @@ final class MemoryServiceTest extends TestCase
             @unlink($path.'-shm');
         }
     }
+
+    public function testReStatingASentenceDoesNotClearItsPin(): void
+    {
+        // Re-stating a fact is the canonical "this is still true" gesture, and
+        // it must not also be an unpin. If it is, the store converts its
+        // strongest durability signal into a disposable one, silently — the
+        // loss only shows up when the trimmer eventually eats the fact.
+        $this->service->remember([
+            new RememberItem(key: 'ops', sentences: 'Rotate the deploy key monthly.', pin: true),
+        ]);
+
+        $report = $this->service->remember([
+            new RememberItem(key: 'ops', sentences: 'Rotate the deploy key monthly.'),
+        ]);
+
+        self::assertSame(1, $report['results'][0]['renewed'], 'the sentence is renewed, not duplicated');
+        self::assertSame(1, $this->recallOne('ops')['pinned'], 'an omitted pin leaves an existing pin alone');
+    }
+
+    public function testAnUnrelatedWriteDoesNotUnpinAnotherSentence(): void
+    {
+        // The blunt form of the same bug: storing one unpinned fact must not
+        // disturb the pin on a different one.
+        $this->service->remember([new RememberItem(key: 'ops', sentences: 'Durable.', pin: true)]);
+
+        $this->service->remember([new RememberItem(key: 'ops', sentences: 'Ephemeral.', pin: false)]);
+
+        self::assertSame(1, $this->recallOne('ops')['pinned']);
+    }
+
+    public function testPinFalseExplicitlyUnpins(): void
+    {
+        // The other half of the distinction: `false` is a real instruction, so
+        // there is a way to take a pin back that is not `forget` (which would
+        // destroy the history the store promises to keep).
+        $this->service->remember([new RememberItem(key: 'ops', sentences: 'Once durable.', pin: true)]);
+        self::assertSame(1, $this->recallOne('ops')['pinned']);
+
+        $this->service->remember([new RememberItem(key: 'ops', sentences: 'Once durable.', pin: false)]);
+
+        self::assertSame(0, $this->recallOne('ops')['pinned'], 'pin:false removes a pin');
+    }
 }
