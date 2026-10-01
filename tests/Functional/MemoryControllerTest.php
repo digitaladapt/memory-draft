@@ -490,4 +490,57 @@ final class MemoryControllerTest extends WebTestCase
 
         self::assertSame(['Dr. Smith signed off', 'Budget is 3.50'], array_column($entries, 'text'));
     }
+
+    /**
+     * An omitted `pin` is not an instruction to unpin.
+     *
+     * The wire is where the distinction has to hold, because the MCP adapter
+     * forwards `pin` only when the model actually said something about it — so
+     * the common re-statement of a known fact arrives with no `pin` at all, and
+     * must leave the existing one alone.
+     */
+    public function testAnOmittedPinLeavesAnExistingPinAloneOverTheWire(): void
+    {
+        $client = $this->client();
+
+        $this->post($client, '/api/remember', [
+            'items' => [['key' => 'soul', 'sentences' => 'Durable fact.', 'pin' => true]],
+        ]);
+
+        // No `pin` key at all: exactly what the adapter sends on a re-write.
+        $result = $this->decode($this->post($client, '/api/remember', [
+            'items' => [['key' => 'soul', 'sentences' => 'Durable fact.']],
+        ]))['results'][0];
+
+        self::assertSame(1, $result['renewed']);
+
+        $hit = $this->decode($this->post($client, '/api/recall', [
+            'queries' => [['key' => 'soul']],
+        ]))['hits'][0];
+
+        self::assertSame(1, $hit['pinned'], 're-stating a fact must not make it disposable');
+    }
+
+    /**
+     * `pin: false` is a real instruction, and the only way to take a pin back
+     * without `forget` (which would destroy the history the store keeps).
+     */
+    public function testPinFalseUnpinsOverTheWire(): void
+    {
+        $client = $this->client();
+
+        $this->post($client, '/api/remember', [
+            'items' => [['key' => 'soul', 'sentences' => 'Once durable.', 'pin' => true]],
+        ]);
+        $this->post($client, '/api/remember', [
+            'items' => [['key' => 'soul', 'sentences' => 'Once durable.', 'pin' => false]],
+        ]);
+
+        $hit = $this->decode($this->post($client, '/api/recall', [
+            'queries' => [['key' => 'soul']],
+        ]))['hits'][0];
+
+        self::assertSame(0, $hit['pinned']);
+        self::assertSame(1, $hit['hot'], 'unpinning is not the same as forgetting');
+    }
 }

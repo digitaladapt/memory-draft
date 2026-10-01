@@ -40,7 +40,12 @@ final class RememberCommand extends Command
             ->addArgument('text', InputArgument::OPTIONAL, 'Prose to split into sentences')
             ->addOption('sentence', 's', InputOption::VALUE_REQUIRED | InputOption::VALUE_IS_ARRAY, 'An exact sentence (repeatable); skips the splitter')
             ->addOption('mode', 'm', InputOption::VALUE_REQUIRED, 'append (default) or replace', 'append')
-            ->addOption('pin', null, InputOption::VALUE_NONE, 'Exempt from trimming (durable facts)')
+            // Negatable, so the console can express all three states the
+            // service distinguishes: `--pin` pins, `--no-pin` un-pins, and
+            // omitting both leaves an existing pin exactly as it is.
+            // VALUE_NONE could only ever say "pin", which made `--no-pin`
+            // unreachable and an unpin impossible from the console.
+            ->addOption('pin', null, InputOption::VALUE_NEGATABLE, 'Exempt from trimming; --no-pin removes a pin, omitting leaves it')
             ->addOption('revision', 'r', InputOption::VALUE_REQUIRED, 'Revision you read; a lower one is kept as backfill')
             ->addOption('json', null, InputOption::VALUE_NONE, 'Emit raw JSON');
     }
@@ -56,7 +61,8 @@ final class RememberCommand extends Command
         $sentences = $input->getOption('sentence');
         /** @var string $mode */
         $mode = $input->getOption('mode');
-        $pin = (bool) $input->getOption('pin');
+        /** @var bool|null $pin */
+        $pin = $input->getOption('pin');
         /** @var string|null $revision */
         $revision = $input->getOption('revision');
 

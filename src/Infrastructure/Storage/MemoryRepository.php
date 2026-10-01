@@ -193,6 +193,16 @@ final class MemoryRepository
      * Insert or renew one sentence, enforcing "a sentence exists exactly once
      * per key" across both tiers.
      *
+     * `$pinned` is tri-state, and is the only column here that is. Every other
+     * field is rewritten unconditionally, because a new write genuinely
+     * supersedes it — but the *absence* of an instruction about pinning is not
+     * an instruction to unpin. Renewing a sentence is how a caller says "this
+     * is still true", and a plain `bool` made that same gesture silently
+     * discard the pin, turning the store's strongest durability signal into a
+     * disposable one without saying so.
+     *
+     * @param bool|null $pinned true pins, false unpins, null leaves it as it is
+     *
      * @return string one of: added, renewed, revived, promoted
      */
     public function upsertSentence(
@@ -200,7 +210,7 @@ final class MemoryRepository
         string $text,
         int $batch,
         int $revision,
-        bool $pinned,
+        ?bool $pinned,
         bool $backfilled,
     ): string {
         $pdo = $this->connection->pdo();
@@ -211,20 +221,24 @@ final class MemoryRepository
 
         if (null !== $existing) {
             $tier = Tier::from((string) $existing['tier']);
+            // COALESCE leaves an existing pin alone when the caller said
+            // nothing: NULL is "no instruction", not "unpin".
             $statement = $pdo->prepare(
                 'UPDATE sentences
                  SET created_at = :now, batch = :batch, written_revision = :revision,
-                     backfilled = :backfilled, pinned = :pinned
+                     backfilled = :backfilled, pinned = COALESCE(:pinned, pinned)
                  WHERE id = :id'
             );
-            $statement->execute([
-                'now' => $now,
-                'batch' => $batch,
-                'revision' => $revision,
-                'backfilled' => $backfilled ? 1 : 0,
-                'pinned' => $pinned ? 1 : 0,
-                'id' => $existing['id'],
-            ]);
+            $statement->bindValue('now', $now);
+            $statement->bindValue('batch', $batch, \PDO::PARAM_INT);
+            $statement->bindValue('revision', $revision, \PDO::PARAM_INT);
+            $statement->bindValue('backfilled', $backfilled ? 1 : 0, \PDO::PARAM_INT);
+            // Bound explicitly rather than via execute(): the array form types
+            // every value as a string, and the whole point here is to pass a
+            // real NULL.
+            $statement->bindValue('pinned', null === $pinned ? null : ($pinned ? 1 : 0), null === $pinned ? \PDO::PARAM_NULL : \PDO::PARAM_INT);
+            $statement->bindValue('id', $existing['id'], \PDO::PARAM_INT);
+            $statement->execute();
 
             // A renewed fact is an assertion that it is still true, so it
             // belongs in the hot tier whether or not it had been demoted.
@@ -249,6 +263,8 @@ final class MemoryRepository
             'hash' => $hash,
             'now' => $now,
             'tier' => Tier::Hot->value,
+            // A new sentence has no pin to preserve, so "no instruction" is
+            // simply unpinned here. The two differ only on a renewal.
             'pinned' => $pinned ? 1 : 0,
             'batch' => $batch,
             'revision' => $revision,

@@ -14,6 +14,18 @@ use Symfony\Component\Validator\Constraints as Assert;
  * means "I am writing against revision N" and lets the service detect that
  * another writer has moved on. Omitting it means "I did not read first", which
  * is legitimate and treated as a write against current knowledge.
+ *
+ * `pin` is deliberately tri-state rather than a plain bool, because "do not
+ * pin" and "leave the pin as it is" are different instructions and collapsing
+ * them is destructive. A sentence that is already stored is *renewed* when it
+ * is written again, and re-stating a fact is the normal way to say "this is
+ * still true" — so a write that does not mention `pin` must not be read as an
+ * instruction to take the pin away. Under a plain bool, omitted and `false`
+ * were one value, and re-stating a pinned fact silently made it disposable.
+ *
+ * - `null`  — leave any existing pin untouched (and store a new sentence unpinned)
+ * - `true`  — pin these sentences
+ * - `false` — unpin these sentences
  */
 final class RememberItem
 {
@@ -26,7 +38,7 @@ final class RememberItem
         public string|array|null $sentences = null,
         #[Assert\Choice(choices: ['append', 'replace'])]
         public string $mode = 'append',
-        public bool $pin = false,
+        public ?bool $pin = null,
         public ?int $revision = null,
     ) {
     }
