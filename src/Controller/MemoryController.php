@@ -53,6 +53,13 @@ final class MemoryController extends AbstractController
      * which is the token the caller echoes back on write; a miss carries
      * near-miss suggestions so the caller can recover instead of concluding the
      * store knows nothing.
+     *
+     * An entry may instead ask for the **latest** keys — `{"latest": true}` for
+     * the service's default count, or `{"latest": N}` for an explicit one. Those
+     * hits carry `"match": "recent"` rather than a match kind, because nothing
+     * was matched against: the key is in the answer for when it was written. The
+     * response then carries a `latest` block whose first line says what was
+     * shown, so a default can never be mistaken for a deliberate recall.
      */
     #[Route('/api/recall', name: 'api_recall', methods: ['POST'])]
     public function recall(
@@ -68,7 +75,12 @@ final class MemoryController extends AbstractController
                 'key' => $query->key,
                 'depth' => $query->depth,
                 'includeCold' => $query->includeCold,
-            ],
+                // Only present when the entry actually asked for recency, so the
+                // service's "an entry is a named lookup unless it says otherwise"
+                // rule reads the same on the wire as it does in the API — the
+                // distinction survives the transport rather than being flattened
+                // into `false` and re-derived.
+            ] + ($query->isLatest() ? ['latest' => $query->latestCount()] : []),
             $payload->queries,
         );
 

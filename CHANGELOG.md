@@ -7,8 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A recall entry can ask for the most recently written keys instead of naming
+  one.** A caller opening a session knows no key names, so every recall it could
+  make is a guess, and `memory:keys` hands it an unranked list to choose from —
+  the selection decision small models make worst. Recency is the one question
+  that needs no prior knowledge:
+
+  ```jsonc
+  {"queries": [{"latest": true}]}                  // the service's default count
+  {"queries": [{"latest": 3}]}                     // an explicit count
+  {"queries": [{"key": "soul"}, {"latest": true}]}  // both, in one round trip
+  ```
+
+  - `latest` accepts `true` for the **service's own default** (8), so no client
+    hardcodes a number and the default can be retuned without a client release.
+    `memory:recall --latest` and `--latest=N` are the console equivalents.
+  - Breadth is counted in **keys, not sentences**: N recent keys, each
+    contributing its newest D sentences (defaults 8 and 3, both capped), so a key
+    written every few hours cannot take every slot.
+  - Recency hits report `"match": "recent"` rather than claiming a match kind,
+    and the response carries a `latest` block whose `note` states what was shown
+    and whether the count was the caller's or the service's — authored by the
+    service, so console and wire cannot describe it differently.
+  - A key named *and* recent appears once, as the named hit; de-duplication is by
+    canonical key, and `latest.available` excludes keys answered by name.
+  - An **empty store** answers a recency read with a `200` and a note. Only an
+    empty *named* recall stays a `422`.
+  - Four shapes are refused: a `key` and `latest` in one entry, two `latest`
+    entries, a count outside `1..50`, and a fractional count. A count written as
+    a whole float (`8.0`) is accepted, because JSON has no integer type.
+
+- Every recall hit reports `last_written`, the humanized age of the key itself,
+  so a key nothing has touched in months is visible without recalling it. This is
+  the key-level age line the spec's open questions asked for.
+
 ### Fixed
 
+- **`memory:keys` and the recency read were ordered by a second-resolution
+  timestamp, so same-second writes came back oldest-first.** Ordering is now
+  `updated_at DESC, id DESC`. It was harmless as a listing — the order of a
+  directory was cosmetic — but recency made that order *the answer*, and the
+  answer was inverted for any burst of writes landing in one second, which a
+  session writing several keys does routinely. The monotonic `id` is the
+  tiebreak, by the same argument as `batch` for sentences: ordering is not a
+  question the clock can be trusted to answer.
 - **Re-stating a pinned fact no longer silently un-pins it.** `pin` is now
   tri-state: omitted leaves an existing pin exactly as it is, `true` pins, and
   `false` un-pins. It was a plain boolean, so an omitted `pin` and an explicit
