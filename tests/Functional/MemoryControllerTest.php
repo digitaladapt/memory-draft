@@ -543,4 +543,171 @@ final class MemoryControllerTest extends WebTestCase
         self::assertSame(0, $hit['pinned']);
         self::assertSame(1, $hit['hot'], 'unpinning is not the same as forgetting');
     }
+
+    /**
+     * The omission is the ergonomic point: a caller that knows no key names can
+     * still ask the one useful opening question.
+     */
+    public function testOmittedKeysWithLatestReturnsWhereWeLeftOff(): void
+    {
+        $client = $this->client();
+
+        $this->post($client, '/api/remember', [
+            'items' => [['key' => 'soul', 'sentences' => 'Durable fact.']],
+        ]);
+        $this->post($client, '/api/remember', [
+            'items' => [['key' => 'chat', 'sentences' => 'Yesterday we discussed the tool surface.']],
+        ]);
+
+        $body = $this->decode($this->post($client, '/api/recall', [
+            'queries' => [['latest' => true]],
+        ]));
+
+        self::assertCount(2, $body['hits']);
+        self::assertSame(['chat', 'soul'], array_column($body['hits'], 'key'), 'newest first');
+        self::assertSame('recent', $body['hits'][0]['match']);
+        self::assertArrayNotHasKey('resolved_from', $body['hits'][0]);
+        self::assertSame(2, $body['latest']['included']);
+        self::assertStringContainsString('No keys given', $body['latest']['note']);
+    }
+
+    public function testAnExplicitLatestCountIsHonouredOverTheWire(): void
+    {
+        $client = $this->client();
+
+        foreach (range(1, 5) as $i) {
+            $this->post($client, '/api/remember', ['items' => [['key' => "key{$i}", 'sentences' => "Fact {$i}."]]]);
+        }
+
+        $body = $this->decode($this->post($client, '/api/recall', [
+            'queries' => [['latest' => 2]],
+        ]));
+
+        self::assertSame(['key5', 'key4'], array_column($body['hits'], 'key'));
+        self::assertSame(2, $body['latest']['count']);
+    }
+
+    /**
+     * A named key and a recency read in one round trip.
+     *
+     * This is the shape the opening call actually wants: the durable facts by
+     * name, plus whatever was written recently — one request, no second verb to
+     * choose between.
+     */
+    public function testNamedKeysAndLatestMayBeCombined(): void
+    {
+        $client = $this->client();
+
+        $this->post($client, '/api/remember', ['items' => [['key' => 'soul', 'sentences' => 'Durable.']]]);
+        $this->post($client, '/api/remember', ['items' => [['key' => 'chat', 'sentences' => 'Recent chatter.']]]);
+
+        $body = $this->decode($this->post($client, '/api/recall', [
+            'queries' => [['key' => 'soul'], ['latest' => true]],
+        ]));
+
+        self::assertSame(['soul', 'chat'], array_column($body['hits'], 'key'), 'named first, then recent');
+        self::assertSame('exact', $body['hits'][0]['match']);
+    }
+
+    public function testACombinedRecallDoesNotReturnANamedKeyTwice(): void
+    {
+        $client = $this->client();
+
+        $this->post($client, '/api/remember', ['items' => [['key' => 'soul', 'sentences' => 'Durable.']]]);
+
+        $body = $this->decode($this->post($client, '/api/recall', [
+            'queries' => [['key' => 'soul'], ['latest' => 5]],
+        ]));
+
+        self::assertCount(1, $body['hits'], 'the named occurrence answers for the key');
+        self::assertSame(0, $body['latest']['included']);
+    }
+
+    public function testAnEmptyStoreAnswersARecencyReadWithANoteNotAnError(): void
+    {
+        // Distinct from the empty *named* recall below, which is a 422: there, a
+        // blank request is a caller bug. Here it is a question with a true,
+        // useful answer — the store is empty.
+        $client = static::createClient();
+        $this->post($client, '/api/recall', ['queries' => [['latest' => true]]]);
+
+        self::assertResponseIsSuccessful();
+        $body = $this->decode($client->getResponse());
+
+        self::assertSame([], $body['hits']);
+        self::assertSame(0, $body['latest']['included']);
+        self::assertStringContainsString('no keys', $body['latest']['note']);
+    }
+
+    /**
+     * A latest-only entry is well-formed; it must not be caught by the
+     * `NotBlank` that used to guard `key`.
+     */
+    public function testALatestOnlyEntryIsNotTreatedAsABlankKey(): void
+    {
+        $client = static::createClient();
+        $this->post($client, '/api/recall', ['queries' => [['latest' => true]]]);
+
+        self::assertResponseIsSuccessful();
+    }
+
+    public function testNamingAKeyAndAskingForLatestInOneEntryIsRejected(): void
+    {
+        // Both is a two-entry request; in one entry it has no defined meaning,
+        // so it is refused rather than silently resolved one way.
+        $client = static::createClient();
+        $this->post($client, '/api/recall', ['queries' => [['key' => 'soul', 'latest' => true]]]);
+
+        self::assertResponseStatusCodeSame(Response::HTTP_UNPROCESSABLE_ENTITY);
+    }
+
+    public function testTwoLatestEntriesAreRejected(): void
+    {
+        // Two orderings of one thing; the answer could only be one of them, and
+        // which one would be an implementation detail rather than a rule.
+        $client = static::createClient();
+        $this->post($client, '/api/recall', ['queries' => [['latest' => 3], ['latest' => 8]]]);
+
+        self::assertResponseStatusCodeSame(Response::HTTP_UNPROCESSABLE_ENTITY);
+    }
+
+    public function testALatestCountOfZeroIsRejected(): void
+    {
+        $client = static::createClient();
+        $this->post($client, '/api/recall', ['queries' => [['latest' => 0]]]);
+
+        self::assertResponseStatusCodeSame(Response::HTTP_UNPROCESSABLE_ENTITY);
+    }
+
+    public function testALatestCountBeyondTheBoundIsRejected(): void
+    {
+        // A recency read is a probe for "where did we leave off"; unbounded, it
+        // is a way to pull the whole store into one context window.
+        $client = static::createClient();
+        $this->post($client, '/api/recall', ['queries' => [['latest' => 500]]]);
+
+        self::assertResponseStatusCodeSame(Response::HTTP_UNPROCESSABLE_ENTITY);
+    }
+
+    public function testAWholeNumberIsNotAnAcceptableLatestCount(): void
+    {
+        // A fractional count is a malformed one, and saying so beats silently
+        // truncating 8.5 to 8.
+        $client = static::createClient();
+        $this->post($client, '/api/recall', ['queries' => [['latest' => 8.5]]]);
+
+        self::assertResponseStatusCodeSame(Response::HTTP_UNPROCESSABLE_ENTITY);
+    }
+
+    public function testALatestCountWrittenAsAWholeFloatIsStillEight(): void
+    {
+        // JSON has no integer type, so a client that serializes numbers as
+        // decimals sends `8.0`. That is the number eight, not an error.
+        $client = static::createClient();
+        $this->post($client, '/api/recall', ['queries' => [['latest' => 8.0]]]);
+
+        self::assertResponseIsSuccessful();
+        $body = $this->decode($client->getResponse());
+        self::assertSame(8, $body['latest']['count']);
+    }
 }

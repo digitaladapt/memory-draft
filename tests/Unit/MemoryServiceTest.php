@@ -567,4 +567,251 @@ final class MemoryServiceTest extends TestCase
 
         self::assertSame(0, $this->recallOne('ops')['pinned'], 'pin:false removes a pin');
     }
+
+    // ---------------------------------------------------------------------- //
+    // recency — "where did we leave off?"
+    // ---------------------------------------------------------------------- //
+
+    /**
+     * The one question a keyword store cannot be asked by name.
+     *
+     * A caller opening a session knows no keys, so every recall it can make is
+     * a guess. Asking for the latest is the only request that needs no prior
+     * knowledge, and it is the missing half of "what do I know": `memory_keys`
+     * can enumerate, but it cannot rank. Recency is already in the store — every
+     * write stamps `updated_at` — so this is a read of existing data, not new
+     * state.
+     */
+    public function testLatestReturnsTheMostRecentlyWrittenKeysFirst(): void
+    {
+        // Written oldest-first, and ten of them land inside one second — which
+        // is the ordinary case, not an edge case, and is exactly what
+        // second-resolution timestamps cannot order on their own.
+        foreach (range(1, 10) as $i) {
+            $this->service->remember([new RememberItem(key: "key{$i}", sentences: "Fact {$i}.")]);
+        }
+
+        $result = $this->service->recall([['latest' => 3]]);
+
+        self::assertSame(
+            ['key10', 'key9', 'key8'],
+            array_column($result['hits'], 'key'),
+            'the newest writes lead, even inside a single second',
+        );
+    }
+
+    public function testLatestReportsItsOwnKindRatherThanClaimingAMatch(): void
+    {
+        $this->service->remember([new RememberItem(key: 'soul', sentences: 'Durable.')]);
+
+        $hit = $this->service->recall([['latest' => true]])['hits'][0];
+
+        // Not `exact`: nothing was named. Reporting a match kind would tell the
+        // caller it had asked for this key, which it did not.
+        self::assertSame('recent', $hit['match']);
+        self::assertArrayNotHasKey('resolved_from', $hit, 'nothing was requested, so nothing was resolved');
+    }
+
+    public function testLatestDefaultsToTheServiceCountRatherThanACallerChosenOne(): void
+    {
+        foreach (range(1, 20) as $i) {
+            $this->service->remember([new RememberItem(key: "key{$i}", sentences: "Fact {$i}.")]);
+        }
+
+        // `true` means "the service decides". This is what lets a client — a
+        // small model above all — ask for recency without naming a number, and
+        // it is why tuning the default needs no client release.
+        $result = $this->service->recall([['latest' => true]]);
+
+        self::assertCount(MemoryService::LATEST_COUNT, $result['hits']);
+        self::assertSame(MemoryService::LATEST_COUNT, $result['latest']['count']);
+    }
+
+    public function testTheRecencyAnswerSaysWhatItDid(): void
+    {
+        $this->service->remember([new RememberItem(key: 'soul', sentences: 'Durable.')]);
+
+        $meta = $this->service->recall([['latest' => true]])['latest'];
+
+        // The failure mode of a default is a caller mistaking it for a
+        // deliberate recall, so the answer carries its own explanation —
+        // authored by the service, so console and wire cannot disagree.
+        self::assertStringContainsString('No keys given', $meta['note']);
+        self::assertStringContainsString((string) MemoryService::LATEST_COUNT, $meta['note']);
+        self::assertSame(1, $meta['included']);
+        self::assertSame(1, $meta['available']);
+        self::assertArrayHasKey('newest', $meta);
+        self::assertArrayHasKey('oldest', $meta);
+    }
+
+    public function testAnEmptyStoreAnswersARecencyReadWithANoteRatherThanAnError(): void
+    {
+        // Nothing has been written yet. That is a fact about the store, not a
+        // caller bug, so it is a 200 with an explanation — the opposite of the
+        // empty *named* recall, which is refused because it is a bug.
+        $result = $this->service->recall([['latest' => true]]);
+
+        self::assertSame([], $result['hits']);
+        self::assertSame(0, $result['latest']['included']);
+        self::assertSame(0, $result['latest']['available']);
+        self::assertStringContainsString('no keys', $result['latest']['note']);
+    }
+
+    /**
+     * Breadth is counted in keys, not sentences.
+     *
+     * One chatty key must not own the answer: a mail summary is written every
+     * few hours and would take every slot in a "N newest sentences" design,
+     * crowding out the conversation the caller actually wanted.
+     */
+    public function testChattyKeysDoNotMonopoliseARecencyRead(): void
+    {
+        foreach (range(1, 40) as $i) {
+            $this->service->remember([new RememberItem(key: 'email-summary', sentences: "Summary {$i}.")]);
+        }
+        $this->service->remember([new RememberItem(key: 'soul', sentences: 'A decision was made.')]);
+
+        $result = $this->service->recall([['latest' => true]]);
+        $keys = array_column($result['hits'], 'key');
+
+        self::assertContains('email-summary', $keys);
+        self::assertContains('soul', $keys, 'the quiet conversation survives the chatty key');
+        self::assertSame(2, $result['latest']['included']);
+    }
+
+    public function testARecencyReadIsShallowPerKeyButNotSilentAboutIt(): void
+    {
+        $this->service->remember([new RememberItem(key: 'k', sentences: 'One. Two. Three. Four. Five.')]);
+
+        $hit = $this->service->recall([['latest' => true]])['hits'][0];
+
+        self::assertCount(MemoryService::LATEST_DEPTH, $hit['entries']);
+        self::assertSame(5, $hit['hot'], 'the total is reported, so a short view is not a mystery');
+        self::assertArrayHasKey('last_written', $hit, 'a recency read is a question about time');
+    }
+
+    /**
+     * A key named *and* recent is attributed to the named occurrence.
+     *
+     * The named hit is the stronger claim — the caller asked about that subject
+     * specifically — so the recency expansion must not append a second copy of
+     * the same key with its own shallower view.
+     */
+    public function testAKeyNamedAndRecentAppearsOnce(): void
+    {
+        $this->service->remember([new RememberItem(key: 'soul', sentences: 'Durable one. Durable two.')]);
+        $this->service->remember([new RememberItem(key: 'other', sentences: 'Something else.')]);
+
+        $result = $this->service->recall([
+            ['key' => 'soul', 'depth' => 12],
+            ['latest' => 5],
+        ]);
+
+        $souls = array_filter($result['hits'], static fn (array $h): bool => 'soul' === $h['key']);
+        self::assertCount(1, $souls, 'the named occurrence wins; no duplicate');
+
+        $hit = array_values($souls)[0];
+        self::assertSame('exact', $hit['match'], 'it answers the name, not the recency request');
+        self::assertCount(2, $hit['entries'], 'and it keeps the depth the caller named for it');
+
+        // `available` excludes what was already answered by name, so
+        // `included < available` keeps meaning "there are keys you are not
+        // seeing" rather than being confounded by the de-duplication.
+        self::assertSame(1, $result['latest']['available']);
+        self::assertSame(1, $result['latest']['included']);
+    }
+
+    public function testANamedDomainKeyIsAlsoNamedWhenSpelledWithADifferentCase(): void
+    {
+        // De-duplication is by canonical key, not by the string the caller
+        // typed: `Soul` and `soul` are one key, and the expansion must not add
+        // it back under the other spelling.
+        $this->service->remember([new RememberItem(key: 'soul', sentences: 'Durable.')]);
+
+        $result = $this->service->recall([['key' => 'SOUL'], ['latest' => 5]]);
+
+        self::assertCount(1, $result['hits'], 'one key, one hit');
+    }
+
+    public function testNamedKeysLeadAndRecencyFollows(): void
+    {
+        // The answer reads predictably — what you asked for, then what is
+        // recent — regardless of where the recency entry sat in the batch.
+        $this->service->remember([new RememberItem(key: 'soul', sentences: 'Durable.')]);
+        $this->service->remember([new RememberItem(key: 'later', sentences: 'More recent.')]);
+
+        foreach ([
+            [['latest' => 5], ['key' => 'soul']],
+            [['key' => 'soul'], ['latest' => 5]],
+        ] as $queries) {
+            $hits = $this->service->recall($queries)['hits'];
+            self::assertSame('soul', $hits[0]['key'], 'the named key leads either way');
+            self::assertSame('later', $hits[1]['key']);
+        }
+    }
+
+    public function testRecencyNoteTellsTheTruthWhenSomeNamedKeysMiss(): void
+    {
+        // Nothing named resolved, so nothing was answered by name — but keys do
+        // remain to show. The note must not claim the store is empty.
+        $this->service->remember([new RememberItem(key: 'soul', sentences: 'Durable.')]);
+
+        $result = $this->service->recall([['key' => 'nobody-knows'], ['latest' => 5]]);
+
+        self::assertCount(1, $result['misses']);
+        self::assertSame('soul', $result['hits'][0]['key']);
+        self::assertSame('No keys given — showing', substr($result['latest']['note'], 0, 25));
+    }
+
+    public function testARecencyReadDoesNotExposeColdOrGrowTheStore(): void
+    {
+        // A read is a read. Recency reuses the keyspace query, so it must not
+        // create keys, learn aliases, or reach into cold storage.
+        $service = self::service(hotCap: 1);
+        $service->remember([new RememberItem(key: 'k', sentences: 'Old.')]);
+        $service->remember([new RememberItem(key: 'k', sentences: 'New.')]);
+
+        $before = $service->stats();
+        $hit = $service->recall([['latest' => true]])['hits'][0];
+
+        self::assertSame(['New.'], $this->texts($hit));
+        self::assertSame(1, $hit['cold'], 'the cold tier is not silently folded in');
+        self::assertSame($before, $service->stats(), 'a recency read mutates nothing');
+        self::assertSame([], $service->keys()[0]['aliases']);
+    }
+
+    public function testAnOutOfRangeCountIsClampedRatherThanInvertingTheRead(): void
+    {
+        // The wire rejects these, but the service is called directly too — and a
+        // `0` that silently returned the *entire store* would be the worst kind
+        // of surprise: a validation gap that reads as a feature.
+        $this->service->remember([new RememberItem(key: 'a', sentences: 'One.')]);
+        $this->service->remember([new RememberItem(key: 'b', sentences: 'Two.')]);
+
+        self::assertCount(1, $this->service->recall([['latest' => 0]])['hits']);
+        self::assertCount(2, $this->service->recall([['latest' => 999]])['hits']);
+    }
+
+    public function testOurOwnKeyspaceListingIsNewestFirst(): void
+    {
+        // `memory_keys` is what a caller reads to discover names, and it was
+        // ordered by `updated_at` alone — so same-second writes came back oldest
+        // first. Harmless as a listing; wrong as a ranking, which is what
+        // recency made it.
+        foreach (range(1, 5) as $i) {
+            $this->service->remember([new RememberItem(key: "key{$i}", sentences: "Fact {$i}.")]);
+        }
+
+        self::assertSame(
+            ['key5', 'key4', 'key3', 'key2', 'key1'],
+            array_column($this->service->keys(), 'key'),
+        );
+    }
+
+    public function testLastWrittenIsReportedOnAnOrdinaryRecallToo(): void
+    {
+        $this->service->remember([new RememberItem(key: 'k', sentences: 'A fact.')]);
+
+        self::assertSame('just now', $this->recallOne('k')['last_written']);
+    }
 }

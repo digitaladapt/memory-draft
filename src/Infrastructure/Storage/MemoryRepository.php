@@ -482,6 +482,22 @@ final class MemoryRepository
     }
 
     /**
+     * The keyspace, most recently written first.
+     *
+     * Ordered by `updated_at DESC, id DESC`, not `updated_at` alone. Timestamps
+     * are second-resolution, so a burst of writes — a session writing several
+     * keys, or any batch landing inside one second — ties on `updated_at` and
+     * the database is then free to return the rows in any order at all. It
+     * happened to return them in insertion order, which is *oldest first*, so a
+     * recency read answered with the ten most recent keys ranked backwards.
+     *
+     * `id` is the tiebreak because it is monotonic: AUTOINCREMENT means a higher
+     * id was inserted later, which for keys is also written later. This is the
+     * same lesson the sentences table learned as `batch` (§2.2 of the spec) —
+     * ordering is not a question the clock can be trusted to answer — and this
+     * table had simply never needed it until recency made it the point of the
+     * query rather than a cosmetic detail of the listing.
+     *
      * @return list<array<string, mixed>>
      */
     public function allKeys(string $pattern = '', int $limit = 200): array
@@ -490,7 +506,7 @@ final class MemoryRepository
 
         if ('' === $pattern) {
             $statement = $pdo->prepare(
-                'SELECT * FROM memory_keys ORDER BY updated_at DESC LIMIT :limit'
+                'SELECT * FROM memory_keys ORDER BY updated_at DESC, id DESC LIMIT :limit'
             );
             $statement->bindValue('limit', $limit, \PDO::PARAM_INT);
             $statement->execute();
@@ -499,7 +515,7 @@ final class MemoryRepository
         }
 
         $statement = $pdo->prepare(
-            'SELECT * FROM memory_keys WHERE key LIKE :pattern ORDER BY updated_at DESC LIMIT :limit'
+            'SELECT * FROM memory_keys WHERE key LIKE :pattern ORDER BY updated_at DESC, id DESC LIMIT :limit'
         );
         $statement->bindValue('pattern', '%'.KeyNormalizer::slug($pattern).'%');
         $statement->bindValue('limit', $limit, \PDO::PARAM_INT);

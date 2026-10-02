@@ -184,6 +184,61 @@ highest-value read in the service. The caller guessing key names is the failure
 mode; this replaces guessing with looking. It is the answer to "what can I even
 ask about?", which the caller otherwise cannot answer at all.
 
+### 4.6 Recency: `latest`
+
+`memory:keys` answers "what can I ask about?" but not "what did we last talk
+about?", and the difference matters at the start of a session. A caller that has
+just opened one knows no key names, so *every* recall it can make is a guess —
+and being handed an unranked list of names to choose from is the selection
+decision a small model makes worst.
+
+So a recall entry may ask for recency instead of naming a key:
+
+```jsonc
+{"queries": [{"latest": true}]}                  // the service's default count
+{"queries": [{"latest": 3}]}                     // an explicit count
+{"queries": [{"key": "soul"}, {"latest": true}]}  // both, in one round trip
+```
+
+`latest` is tri-state — absent (an ordinary lookup), `true` (the service's own
+default), or a count — and the `true` case is the one that matters: it is what
+lets the **default live in the service** rather than in each client, so tuning it
+needs no client release and a model is never asked to choose a number.
+
+**Breadth is counted in keys, not sentences.** One chatty key must not own the
+answer — `email-summary` is written every few hours and would take every slot in
+an "N newest sentences" design, crowding out the conversation the caller wanted.
+So N recent keys are returned, each contributing its newest D sentences
+(defaults 8 and 3, both overridable, both capped).
+
+**The answer states what it did.** A recency hit carries `match: "recent"`
+(never `exact` — nothing was named), and the response carries a `latest` block
+whose first line says how many keys were shown and whether that count was the
+caller's or the service's. The note is authored by the service so the console and
+the wire cannot describe the same response differently. A caller mistaking a
+default for a deliberate recall is the failure mode being designed against.
+
+**An empty store is a `200` with a note**, not a `422`. "Nothing has been written
+yet" is a true answer to a legitimate question — the opposite of the empty
+*named* recall, which is refused because there a blank request is a caller bug.
+
+Two consequences worth stating because they are easy to get wrong:
+
+- **A key named *and* recent appears once**, as the named hit. The named
+  occurrence is the stronger claim, and de-duplication is by *canonical* key, so
+  `SOUL` and `soul` do not both count. `latest.available` excludes keys answered
+  by name, so `included < available` keeps meaning exactly one thing.
+- **Recency is ordered by `updated_at DESC, id DESC`.** Timestamps are
+  second-resolution, so a burst of writes ties on them and the database may then
+  return the rows in any order — it returned them *oldest first*, which is
+  precisely backwards for a recency read. The monotonic `id` is the tiebreak, by
+  the same argument as `batch` in §2.2: ordering is not a question the clock can
+  be trusted to answer.
+
+Every recall hit also reports `last_written`, the humanized age of the key
+itself, so staleness is visible without recalling it — the key-level age line
+§10.2 asked for.
+
 ---
 
 ## 5. Aging
@@ -297,6 +352,8 @@ console and the wire, because neither re-decides anything.
 
 ```
 POST   /api/recall        {"queries": [{"key": "x", "depth": 12, "includeCold": false}]}
+POST   /api/recall        {"queries": [{"latest": true}]}                 // recency
+POST   /api/recall        {"queries": [{"latest": 3, "depth": 5}]}        // explicit
 POST   /api/remember      {"items":   [{"key": "x", "sentences": "...", "mode": "append",
                                         "pin": false, "revision": 8}]}
 GET    /api/keys          ?pattern=&limit=
@@ -307,6 +364,13 @@ GET    /about             name + build-stamped version
 GET    /health            liveness  — never touches the store
 GET    /ready             readiness — opens and reads the store; 503 if it cannot
 ```
+
+A recall entry names a key **or** asks for `latest`, never both in one entry —
+both is a two-entry batch — and at most one entry per batch may ask for recency.
+`latest` takes `true` (the service default) or a count in `1..50`. A count written
+as a whole float (`8.0`) is accepted, because JSON has no integer type and such a
+client is not making an error; a fractional one (`8.5`) is refused as the
+malformed count it is.
 
 `/health` and `/ready` sit at the **root**, per §8.4, and because the Docker
 `HEALTHCHECK` and the example compose file already probe `/health` there.
@@ -328,13 +392,20 @@ constraints are the contract. A blank key, an unknown `mode`, an out-of-range
 ### Console
 
 ```
-memory:recall   <key...> [--depth N] [--cold] [--json]
+memory:recall   [<key...>] [--depth N] [--cold] [--latest[=N]] [--latest-depth N] [--json]
 memory:remember <key> [text] [-s|--sentence ...] [--mode append|replace]
                             [--pin] [--revision N] [--json]
 memory:keys     [pattern] [--limit N] [--json]
 memory:stats    [--json]
 memory:forget   <key> [--force]
 ```
+
+`memory:recall`'s key argument is optional so that `--latest` alone is a complete
+request; naming neither a key nor `--latest` is refused at the console, matching
+the wire. `--latest` distinguishes *absent* from *asked for with no value* by
+defaulting to `false` rather than `null` — Symfony reports `null` for both, so a
+`null` default would make a bare `--latest` indistinguishable from no recency
+request at all.
 
 `memory:forget` is a separate command rather than a flag, so the only
 destructive operation cannot be reached by a typo in a write.
@@ -343,11 +414,17 @@ destructive operation cannot be reached by a typo in a write.
 
 ```php
 $memory->recall([['key' => 'x', 'depth' => 12, 'includeCold' => false]]);
+$memory->recall([['latest' => true]]);                  // recent keys, service default
+$memory->recall([['key' => 'soul'], ['latest' => 3]]);  // both, named first
 $memory->remember([new RememberItem(key: 'x', sentences: '...', revision: 8)]);
 $memory->keys(pattern: '', limit: 200);
 $memory->stats();
 $memory->forget('x');
 ```
+
+The service clamps `latest` and `depth` itself rather than trusting the edge: it
+is called directly and from the console, and an unclamped `0` count would return
+every key in the store — a validation gap that reads as a feature.
 
 ---
 
@@ -367,10 +444,10 @@ Caps are guesses pending real use. The right way to tune them is to watch
 ## 10. Open questions
 
 1. **Caps are unvalidated by real use.** 20/200 is reasoning, not measurement.
-2. **No age warning on recall.** If everything under a key is months old, the
-   caller cannot tell stale from current except by reading the age on each
-   sentence. A key-level "nothing here has been touched in N months" line is
-   cheap and probably worth adding.
+2. **~~No age warning on recall.~~** Addressed: every hit now reports
+   `last_written`, so a key nothing has touched in months is visible without
+   recalling it. What remains unaddressed is a *warning* rather than a figure —
+   nothing currently says "this is stale" as opposed to reporting the age.
 3. **`match_key` collisions have no resolution path.** `project:foo` and
    `project-foo` unify and there is no way to split them again other than
    `forget`. Rare, but the escape hatch is missing.

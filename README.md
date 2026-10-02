@@ -42,6 +42,19 @@ deploy  (2 hot, revision 1)
 Recall defaults to the whole current window (up to 12 sentences per key, plus
 every pinned one), so the common case needs no `--depth` at all.
 
+At the start of a session you know no key names yet, so ask the other question —
+*what was written recently?*:
+
+```bash
+bin/console memory:recall --latest
+```
+
+```bash
+No keys given — showing the 8 most recently written keys (the service default): 2 included of 2 available, newest just now, oldest 2h ago.
+deploy  (2 hot, revision 1)
+  - [just now] Uses blue-green deploys.
+```
+
 ### HTTP
 
 The same operations are available over HTTP; the commands above and the
@@ -73,16 +86,21 @@ The store lives on a volume, so memory outlives the container.
 
 | Command | Purpose |
 |---|---|
-| `memory:recall <key...>` | Look up one or more keywords |
+| `memory:recall [<key...>]` | Look up keywords, or the most recently written keys |
 | `memory:remember <key> [text]` | Store sentences (prose or explicit `--sentence`) |
 | `memory:keys [pattern]` | Enumerate the keyspace, with aliases |
 | `memory:stats` | Counts and active trimming budgets |
 | `memory:forget <key>` | Permanently delete a key |
 
 Useful flags: `--depth N` (unpinned sentences per key — pinned are always returned),
-`--cold` (include the cold tier),
+`--cold` (include the cold tier), `--latest[=N]` (also show the N most recently
+written keys; no value means the service's default),
+`--latest-depth N` (sentences per key on that read),
 `--pin` (exempt from trimming), `--mode replace` (retire current sentences),
 `--revision N` (write against a revision you read), `--json`.
+
+Naming neither a key nor `--latest` is refused, matching the wire — an empty
+recall is a caller bug, not a request for nothing.
 
 ## HTTP API
 
@@ -102,6 +120,13 @@ the service is entered.
 // POST /api/recall
 {"queries": [{"key": "deploy", "depth": 2, "includeCold": false}]}
 
+// where we left off, with no key names known yet
+{"queries": [{"latest": true}]}
+
+// an explicit number of recent keys, and both at once
+{"queries": [{"latest": 3, "depth": 5}]}
+{"queries": [{"key": "soul"}, {"latest": true}]}
+
 // POST /api/remember
 {"items": [{"key": "deploy", "sentences": "One. Two.", "mode": "append", "pin": false, "revision": 8}]}
 ```
@@ -113,8 +138,37 @@ results including anything retired, demoted or purged.
 
 `depth` defaults to 12 and bounds **unpinned** sentences only; pinned sentences
 are always returned in full (see Concepts → Two tiers). Each hit reports its
-`pinned` count alongside `hot`/`cold`/`backfilled`, so a `shown` larger than the
-requested depth is explained rather than surprising.
+`pinned` count alongside `hot`/`cold`/`backfilled`, and its `last_written` age,
+so a `shown` larger than the requested depth is explained rather than surprising
+and a stale key is visible without recalling it.
+
+### Recency: `latest`
+
+A recall entry either names a key or asks for the most recently written ones.
+The second is what a caller needs at the start of a session, when it knows no key
+names and every recall it could make would be a guess.
+
+- `true` means **the service's own default count** (currently 8), so a client
+  never has to choose a number and the default can be retuned without a client
+  release. A count in `1..50` overrides it.
+- Hits from that read carry `"match": "recent"`, never `exact` — nothing was
+  named, so nothing matched.
+- The response gains a `latest` block whose `note` says what was shown and
+  whether the count was the caller's or the service's. **Trust the note**: a
+  default mistaken for a deliberate recall is the failure mode this exists to
+  prevent.
+- Breadth is counted in **keys**, not sentences: N recent keys, each contributing
+  its newest D sentences, so one busy key cannot take the whole answer.
+- A key named *and* recent appears once, as the named hit. `latest.available`
+  excludes keys answered by name, so `included < available` means only one thing.
+- An **empty store** answers with a `200` and a note, not an error — "nothing
+  written yet" is a true answer. Only an empty *named* recall is a `422`.
+
+Four shapes are refused with a `422`, all before the service is entered: a `key`
+and a `latest` in the same entry, two `latest` entries in one batch, a count
+outside `1..50`, and a fractional count (`8.5`). A count written as a whole float
+(`8.0`) is accepted: JSON has no integer type, so such a client is not making a
+mistake.
 
 Two status codes are worth stating because they are choices, not defaults:
 
