@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Keys are canonicalised through ICU, so accented spellings resolve to one key
+  and emoji survive.** `café` written composed or decomposed is now one key
+  (`cafe`), and `Latin-ASCII` folding runs through `Normalizer`/`Transliterator`
+  rather than a hand-written table — which matters because stripping combining
+  marks is right for Latin and *wrong* for Devanagari, where they are vowel
+  signs. Emoji and non-Latin scripts are kept verbatim: the primary reader of a
+  key is a language model, and `😬` is information where `?` is not. Requires
+  `ext-intl`.
+
 - **A recall entry can ask for the most recently written keys instead of naming
   one.** A caller opening a session knows no key names, so every recall it could
   make is a guess, and `memory:keys` hands it an unranked list to choose from —
@@ -44,6 +53,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the key-level age line the spec's open questions asked for.
 
 ### Fixed
+
+- **A key with only punctuation, emoji, or non-Latin characters was stored as
+  the empty string, silently merging unrelated memories into one row.**
+  `KeyNormalizer::slug()` kept nothing outside `a-z0-9`, so `..`, `😬` and `记忆`
+  all normalised to `''`. Because the identity is *stored* rather than recomputed,
+  the first such key created a row whose key was `''` and every later one joined
+  it — no error, no trace, and a prefix match on `''` made it a candidate for
+  every lookup. Non-empty input now guarantees non-empty output: when folding has
+  nothing left to keep, the codepoints are spelled out (`---` → `u2d-u2d-u2d`).
+- **`slug()` and `matchKey()` disagreed about non-Latin keys.** `matchKey()` had a
+  fallback to the trimmed input for keys with no ASCII alphanumerics; `slug()` had
+  none, so the two derived conflicting values for the same key.
+- **The identity form was not idempotent.** ICU's `Latin-ASCII` is
+  context-sensitive — `ṏ` folds only after a following combining mark is
+  stripped, and stripping a mark can leave a jamo that NFKC then composes into a
+  different syllable — so a stored `match_key` could change on read-back. Folding
+  now iterates to a fixed point.
+- **Non-Latin keys produced no suggestion tokens.** `tokens()` split on
+  `[^A-Za-z0-9]+`, so a Cyrillic or CJK key yielded an empty token list and the
+  miss path offered nothing for it, telling the caller no similar key exists.
 
 - **`memory:keys` and the recency read were ordered by a second-resolution
   timestamp, so same-second writes came back oldest-first.** Ordering is now
@@ -83,6 +112,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Key normalisation now requires **`ext-intl`** and **`ext-mbstring`**; both are
+  declared in `composer.json`, installed in the image, and added to CI.
+
 - `memory:remember`'s `--pin` is now negatable: `--pin` pins, `--no-pin`
   un-pins, and omitting it leaves an existing pin alone. `--pin` was a plain
   flag, so it could only ever assert "pin" and an un-pin was unreachable from
@@ -96,6 +128,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   answer, not a sample of it. Pinned sentences are returned on top of this.
 
 ### Added
+
+- **Keys are canonicalised through ICU, so accented spellings resolve to one key
+  and emoji survive.** `café` written composed or decomposed is now one key
+  (`cafe`), and `Latin-ASCII` folding runs through `Normalizer`/`Transliterator`
+  rather than a hand-written table — which matters because stripping combining
+  marks is right for Latin and *wrong* for Devanagari, where they are vowel
+  signs. Emoji and non-Latin scripts are kept verbatim: the primary reader of a
+  key is a language model, and `😬` is information where `?` is not. Requires
+  `ext-intl`.
 
 - HTTP API over the same service the console commands use, so the two transports
   cannot diverge:
