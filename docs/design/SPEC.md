@@ -109,8 +109,8 @@ Two derived forms per key, because matching and display want different things.
 
 | Form | Derived by | Used for |
 |---|---|---|
-| `slug` | camel-case split, lowercase, runs of non-alphanumerics → `-`, namespace `:` preserved | Storage and display |
-| `match_key` | lowercase, **all** non-alphanumerics removed | Identity |
+| `slug` | NFKC, Latin diacritics folded to ASCII, camel-case split, lowercase, runs of separators → `-`, namespace `:` preserved | Storage and display |
+| `match_key` | the slug with **all** non-alphanumerics removed | Identity |
 
 So `ContextShuttle` → slug `context-shuttle`, match key `contextshuttle`. All of
 `context-shuttle`, `context_shuttle`, `Context Shuttle`, `CONTEXTSHUTTLE` share
@@ -132,6 +132,36 @@ read-back. This is why the camel-case split happens *before* lowercasing: doing
 it after turns each capital into a separator and mangles the key
 (`ContextShuttle` → `ontext-huttle`). That was a real bug, caught by a test
 asserting readability rather than just identity.
+
+**Non-empty in, non-empty out — always.** A blank (or whitespace-only) key
+normalises to the empty string, but a key with *content* must not. "Nothing
+outside `a-z0-9` survives" and "every non-blank key keeps an identity" are
+different promises, and only the first is safe here. Because the identity is
+**stored, not recomputed**, any key that folded away to `''` — punctuation only,
+emoji, or any script with no ASCII form — landed on the *same* row as every other
+such key, merging unrelated memories with no error and no trace. When folding has
+nothing left to keep, the codepoints are spelled out instead (`---` →
+`u2d-u2d-u2d`): lossless, deterministic, stable under re-normalisation, and
+distinct per input, so two punctuation-only keys stay two keys. Ugly is
+acceptable; silently merged is not.
+
+**Emoji and non-Latin scripts are preserved, not transliterated.** The primary
+reader of a key is a language model, and `😬` round-tripping as `😬` is
+information it can use, where `?` — or `''` — is not. Scripts `Latin-ASCII`
+cannot romanise (Cyrillic, Arabic, Devanagari, Tamil, CJK) pass through intact.
+This is also why folding is delegated to ICU rather than a hand-written
+substitution table: stripping combining marks is right for Latin (`café` →
+`cafe`) and wrong for Devanagari (`नमस्ते` must keep its vowel signs), and the
+generic transliterator already knows the difference.
+
+**ICU's transliterators are context-sensitive, so folding iterates to a fixed
+point.** `Latin-ASCII` is not idempotent on its own: it can emit a non-ASCII
+Latin character (`Ɬ` → `ɬ`) that a second pass would fold further. It is also
+sensitive to *neighbours* — `ṏ` folds only once a following combining mark has
+been stripped, and stripping a mark can leave a trailing jamo that NFKC then
+composes into a different syllable. `match_key` therefore repeats
+fold-then-strip until the value stops changing. Both of those were found by the
+fuzz loop, after a hand-picked suite passed.
 
 ---
 

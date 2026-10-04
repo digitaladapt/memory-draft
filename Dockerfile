@@ -7,8 +7,13 @@ FROM dunglas/frankenphp:1-php8.5-trixie AS base
 # ── Build stage ───────────────────────────────────────────────────────────────
 FROM base AS build
 
+# intl is a hard requirement, not a nicety: KeyNormalizer canonicalises keys
+# through ICU (Normalizer + Transliterator) rather than a hand-written table, and
+# `composer install` refuses to run when a required extension is missing — so it
+# has to be installed *before* the install step, not just in the runtime image.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        sqlite3 unzip \
+        sqlite3 unzip libicu-dev \
+    && docker-php-ext-install intl \
     && rm -rf /var/lib/apt/lists/*
 
 # Composer from its own pinned image rather than a curl | php, so the version is
@@ -43,10 +48,16 @@ RUN composer dump-env prod --empty \
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM base AS runtime
 
-# pcov is for coverage in CI only; the runtime image needs sqlite and nothing
-# else beyond the base.
+# pcov is for coverage in CI only; the runtime image needs sqlite and intl and
+# nothing else beyond the base. intl is required here as well as at build time —
+# without it the normalizer cannot canonicalise a key and every write fails.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends sqlite3 \
+ && apt-get install -y --no-install-recommends sqlite3 libicu-dev \
+ && docker-php-ext-install intl \
+ # Purge the headers without --auto-remove: apt cannot see that intl.so links
+ # against the libicu runtime, so autoremove would take the library with it and
+ # leave the extension broken at startup.
+ && apt-get purge -y libicu-dev \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

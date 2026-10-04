@@ -7,6 +7,8 @@
         "php": "^8.5",
         "ext-ctype": "*",
         "ext-iconv": "*",
+        "ext-intl": "*",
+        "ext-mbstring": "*",
         "ext-pdo": "*",
         "phpdocumentor/reflection-docblock": "^6.0",
         "symfony/console": "8.1.*",

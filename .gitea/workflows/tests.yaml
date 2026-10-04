@@ -31,8 +31,10 @@ jobs:
       profile: api-gateway
 
       # ▼ ADJUST PER REPO — extra PHP extensions beyond the shared baseline.
-      #   Only preauth needed this (apcu); most repos leave it empty.
-      # extensions: 'apcu'
+      #   memory-draft needs intl: KeyNormalizer canonicalises keys through ICU
+      #   (Normalizer + Transliterator) rather than a hand-rolled table, and
+      #   composer install fails outright without it.
+      extensions: 'intl'
       # php-ini-values: 'apc.enable_cli=1'
 
       # ▼ ADJUST PER REPO — only if a repo has genuine extra setup.
