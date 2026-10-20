@@ -4,10 +4,14 @@ declare(strict_types=1);
 
 namespace App\Infrastructure\Storage;
 
+use App\Domain\Disposition;
 use App\Domain\KeyMatch;
 use App\Domain\KeyNormalizer;
 use App\Domain\Sentence;
+use App\Domain\SentenceMatcher;
+use App\Domain\SentenceMatchKind;
 use App\Domain\Tier;
+use App\Domain\TierScope;
 
 /**
  * All persistence for keys and sentences.
@@ -386,6 +390,128 @@ final class MemoryRepository
         $statement = $pdo->prepare('DELETE FROM sentences WHERE id = :id');
         foreach ($rows as $row) {
             $statement->execute(['id' => $row['id']]);
+        }
+
+        return $rows;
+    }
+
+    /**
+     * Every sentence on a key, pinned included, ordered as recall orders them.
+     *
+     * Used by `revise`, which matches in PHP rather than in SQL. That is a
+     * deliberate choice and not an oversight: folding is Unicode-aware and
+     * diacritic-preserving, `glob` needs anchoring, and SQLite's `LOWER()` is
+     * ASCII-only and its `LIKE` cannot express the relation — so a SQL prefilter
+     * would either disagree with {@see SentenceMatcher} at the edges or silently
+     * narrow the candidate set before the real matcher saw it. A key holds tens
+     * of sentences, not millions, so reading them all costs nothing and keeps one
+     * definition of matching.
+     *
+     * @param list<Tier> $tiers
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function sentencesIn(int $keyId, array $tiers): array
+    {
+        if ([] === $tiers) {
+            return [];
+        }
+
+        $tierList = implode(', ', array_map(static fn (Tier $t): string => "'".$t->value."'", $tiers));
+        $statement = $this->connection->pdo()->prepare(
+            "SELECT * FROM sentences WHERE key_id = :key_id AND tier IN ({$tierList})
+             ORDER BY batch DESC, id ASC"
+        );
+        $statement->execute(['key_id' => $keyId]);
+
+        return $statement->fetchAll();
+    }
+
+    /**
+     * Rows a `revise` would act on, and the rows it declines to touch.
+     *
+     * Matched and skipped are returned together because the report needs both: a
+     * request that matched nothing but *could* have matched a pinned sentence is
+     * not a no-op, it is a refusal, and the caller has to be told which. The
+     * service does the deciding; this method only gathers.
+     *
+     * @return array{matched: list<array<string, mixed>>, pinned: list<array<string, mixed>>, other_tier: list<array<string, mixed>>}
+     */
+    public function selectSentences(
+        int $keyId,
+        string $pattern,
+        SentenceMatchKind $kind,
+        TierScope $scope,
+    ): array {
+        $matched = [];
+        $pinned = [];
+        $otherTier = [];
+
+        // One read of the whole key, then three buckets. Every tier is fetched
+        // regardless of scope so that a `tier: hot` miss can *say* it exists in
+        // cold (§4.3 of the design) instead of reporting a bare nothing.
+        foreach ($this->sentencesIn($keyId, [Tier::Hot, Tier::Cold]) as $row) {
+            if (!SentenceMatcher::matches($kind, $pattern, (string) $row['text'])) {
+                continue;
+            }
+
+            $tier = Tier::from((string) $row['tier']);
+
+            if (!$scope->includes($tier)) {
+                $otherTier[] = $row;
+
+                continue;
+            }
+
+            if (1 === (int) $row['pinned']) {
+                $pinned[] = $row;
+
+                continue;
+            }
+
+            $matched[] = $row;
+        }
+
+        return ['matched' => $matched, 'pinned' => $pinned, 'other_tier' => $otherTier];
+    }
+
+    /**
+     * Apply a disposition to specific sentence ids.
+     *
+     * Takes ids rather than a pattern so that the selection the caller was shown
+     * in a report (or a `dry_run`) is exactly the set acted on — nothing is
+     * re-matched between deciding and doing.
+     *
+     * @param list<int> $ids
+     *
+     * @return list<array<string, mixed>> the rows as they were before the change, in selection order
+     */
+    public function applyDisposition(array $ids, Disposition $disposition): array
+    {
+        if ([] === $ids) {
+            return [];
+        }
+
+        $pdo = $this->connection->pdo();
+        $rows = [];
+
+        $select = $pdo->prepare('SELECT id, text, created_at, tier FROM sentences WHERE id = :id');
+        $demote = $pdo->prepare("UPDATE sentences SET tier = 'cold' WHERE id = :id");
+        $purge = $pdo->prepare('DELETE FROM sentences WHERE id = :id');
+
+        foreach ($ids as $id) {
+            $select->execute(['id' => $id]);
+            $row = $select->fetch();
+            if (false === $row) {
+                continue;
+            }
+
+            $rows[] = $row;
+
+            match ($disposition) {
+                Disposition::Demote => $demote->execute(['id' => $id]),
+                Disposition::Purge => $purge->execute(['id' => $id]),
+            };
         }
 
         return $rows;

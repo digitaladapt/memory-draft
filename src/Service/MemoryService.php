@@ -4,14 +4,18 @@ declare(strict_types=1);
 
 namespace App\Service;
 
+use App\Domain\Disposition;
 use App\Domain\Dto\RecallQuery;
 use App\Domain\Dto\RememberItem;
+use App\Domain\Dto\ReviseItem;
 use App\Domain\KeyNormalizer;
 use App\Domain\MatchKind;
 use App\Domain\MemoryKey;
 use App\Domain\Sentence;
+use App\Domain\SentenceMatchKind;
 use App\Domain\SentenceSplitter;
 use App\Domain\Tier;
+use App\Domain\TierScope;
 use App\Domain\WriteIntent;
 use App\Infrastructure\Storage\MemoryRepository;
 
@@ -80,6 +84,16 @@ final class MemoryService
      * is far too large to multiply by a key count here.
      */
     public const LATEST_DEPTH_MAX = 12;
+
+    /**
+     * Most sentences a single `revise` item will echo back in its report.
+     *
+     * A `contains` pattern on a chatty key can select dozens of sentences, and the
+     * result of a *write* should not be able to fill a context window. The cap is
+     * on the report only: every matched sentence is acted on, and `more` says how
+     * many were left out of the listing.
+     */
+    public const REVISE_ENTRY_CAP = 20;
 
     public function __construct(
         private readonly MemoryRepository $repository,
@@ -312,6 +326,206 @@ final class MemoryService
         }
 
         return ['key' => $found->key->key, 'deleted' => $deleted];
+    }
+
+    /**
+     * Retire or destroy individual sentences, addressed by their text.
+     *
+     * The gap this fills: `remember --mode replace` retires *every* hot sentence
+     * on a key, so one stale fact costs the caller every good fact beside it, and
+     * `forget` destroys the key outright. Neither can express "this one sentence
+     * is no longer true".
+     *
+     * Sentence-level input is taken as {@see ReviseItem} objects, matching
+     * {@see remember()}'s shape rather than taking a loose array, so the console,
+     * the wire and a direct caller all reach the same validation.
+     *
+     * The batch is one transaction: a report that says `changed: 1` cannot come
+     * from a call that half-applied.
+     *
+     * @param list<ReviseItem> $items
+     *
+     * @return array{results: list<array<string, mixed>>, changed: int}
+     *
+     * @throws \DomainException when a destructive selection is ambiguous (§4.1)
+     */
+    public function revise(array $items): array
+    {
+        $results = [];
+        $changedTotal = 0;
+
+        $this->repository->begin();
+
+        try {
+            foreach ($items as $item) {
+                [$result, $changed] = $this->reviseOne($item);
+                $results[] = $result;
+                $changedTotal += $changed;
+            }
+
+            $this->repository->commit();
+        } catch (\Throwable $exception) {
+            $this->repository->rollback();
+
+            throw $exception;
+        }
+
+        return ['results' => $results, 'changed' => $changedTotal];
+    }
+
+    /**
+     * @return array{0: array<string, mixed>, 1: int}
+     */
+    private function reviseOne(ReviseItem $item): array
+    {
+        // Enum checks are repeated here rather than trusted from the DTO: the
+        // service is also called from the console and directly, where no
+        // validator ran (the same reason `latest`/`depth` are clamped below).
+        $disposition = Disposition::tryFrom($item->disposition)
+            ?? throw new \DomainException(\sprintf('Unknown disposition "%s"; use demote or purge.', $item->disposition));
+        $kind = SentenceMatchKind::tryFrom($item->match)
+            ?? throw new \DomainException(\sprintf('Unknown match "%s"; use exact, contains or glob.', $item->match));
+        $scope = TierScope::tryFrom($item->tier)
+            ?? throw new \DomainException(\sprintf('Unknown tier "%s"; use hot, cold or any.', $item->tier));
+
+        $found = $this->repository->findKey($item->key);
+
+        if (null === $found) {
+            // A missing key is a normal answer for a read, but for a revise it
+            // is almost always a typo, so it is reported with the same
+            // suggestions a recall miss carries and changes nothing.
+            return [[
+                'key' => KeyNormalizer::slug($item->key),
+                'disposition' => $disposition->value,
+                'match' => $kind->value,
+                'tier' => $scope->value,
+                'dry_run' => $item->dryRun,
+                'matched' => 0,
+                'changed' => 0,
+                'missing' => true,
+                'suggestions' => array_map(
+                    static fn (array $row): string => (string) $row['key'],
+                    $this->repository->suggest($item->key),
+                ),
+            ], 0];
+        }
+
+        $key = $found->key;
+        $selection = $this->repository->selectSentences($key->id, $item->text, $kind, $scope);
+        $matched = $selection['matched'];
+        $pinned = $selection['pinned'];
+        $otherTier = $selection['other_tier'];
+
+        // Pins are skipped unless explicitly overridden. Pinning is the caller
+        // saying "this survives trimming" (SPEC §5.2), so an ordinary trim must
+        // not quietly reach it — and both dispositions are trims. The skip is
+        // always reported, because a silent skip would look like a miss.
+        if ($item->includePinned && [] !== $pinned) {
+            $matched = array_merge($matched, $pinned);
+            $pinned = [];
+        }
+
+        // Ambiguous *destruction* is refused rather than resolved: several
+        // matches under `glob`/`contains` is a selection the caller has not seen,
+        // and there is no undo. `demote` over several is allowed — it loses
+        // nothing, and "push everything mentioning X out of view" is a real
+        // request (§4.1).
+        if ($disposition->isDestructive() && \count($matched) > 1 && !$item->dryRun) {
+            throw new \DomainException(\sprintf('That %s pattern matches %d sentences on "%s"; purge refuses to destroy more than one at a time. Narrow the pattern, or run again with dryRun to see them.', $kind->value, \count($matched), $key->key));
+        }
+
+        $entries = array_map(
+            fn (array $row): array => $this->entry($row, $disposition, $item->dryRun),
+            $matched,
+        );
+
+        $changed = 0;
+        if (!$item->dryRun && [] !== $matched) {
+            $this->repository->applyDisposition(
+                array_map(static fn (array $row): int => (int) $row['id'], $matched),
+                $disposition,
+            );
+            $changed = \count($matched);
+            // Bumped once per item, like a write batch: a revise changes what
+            // recall returns, so a caller holding an older revision should be
+            // flagged backfilled on its next `remember` rather than overwrite
+            // silently. This includes a purge of an already-cold sentence — the
+            // key's content changed either way (§11.4).
+            $this->repository->bumpRevision($key->id);
+        }
+
+        $counts = $this->repository->counts($key->id);
+        $revision = $this->repository->findKey($key->key)?->key->revision ?? $key->revision;
+
+        $report = [
+            'key' => $key->key,
+            'disposition' => $disposition->value,
+            'match' => $kind->value,
+            'tier' => $scope->value,
+            'dry_run' => $item->dryRun,
+            'matched' => \count($matched) + \count($pinned),
+            'changed' => $changed,
+            'skipped' => [
+                'pinned' => \count($pinned),
+                'other_tier' => \count($otherTier),
+            ],
+            'revision' => $revision,
+            'remaining' => ['hot' => $counts['hot'], 'cold' => $counts['cold'], 'pinned' => $counts['pinned']],
+            // Capped so a `contains` over a chatty key cannot fill a context
+            // window from a *write* result. `more` says how much was withheld.
+            'entries' => \array_slice($entries, 0, self::REVISE_ENTRY_CAP),
+        ];
+
+        if (\count($entries) > self::REVISE_ENTRY_CAP) {
+            $report['more'] = \count($entries) - self::REVISE_ENTRY_CAP;
+        }
+
+        // Said out loud, because a hit in the other tier is invisible in the
+        // default `hot` view and "nothing matched" would be the wrong
+        // conclusion from it.
+        if ([] !== $otherTier) {
+            $report['hint'] = $this->otherTierHint($item->tier, $key->key);
+        }
+
+        if ([] !== $pinned) {
+            $report['hint_pinned'] = 'Pinned sentences were skipped. Pass includePinned to act on them.';
+        }
+
+        return [$report, $changed];
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     *
+     * @return array<string, mixed>
+     */
+    private function entry(array $row, Disposition $disposition, bool $dryRun): array
+    {
+        $action = match (true) {
+            $dryRun => 'would_'.$disposition->value,
+            Disposition::Demote === $disposition => 'demoted',
+            default => 'purged',
+        };
+
+        return [
+            'text' => (string) $row['text'],
+            'action' => $action,
+            'tier' => (string) $row['tier'],
+            'age' => SentenceSplitter::humanizeAge((string) $row['created_at']),
+        ];
+    }
+
+    private function otherTierHint(string $requestedTier, string $key): string
+    {
+        $elsewhere = 'cold' === $requestedTier ? 'hot' : 'cold';
+
+        return \sprintf(
+            'Nothing matched in %s, but the pattern matches sentences in %s on "%s". Pass tier: any (or tier: %s) to reach them.',
+            $requestedTier,
+            $elsewhere,
+            $key,
+            $elsewhere,
+        );
     }
 
     /**

@@ -17,7 +17,9 @@ use Symfony\Component\Console\Question\ConfirmationQuestion;
  * `memory:forget` — permanently delete a keyword.
  *
  * Deliberately its own command rather than a flag on a write, so nothing routine
- * can reach the only destructive operation by accident.
+ * can reach it by accident. `memory:revise --disposition purge` also destroys,
+ * but only the sentences it names, and never as a default — this is the command
+ * that removes a key outright.
  */
 #[AsCommand(
     name: 'memory:forget',

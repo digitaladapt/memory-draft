@@ -7,6 +7,7 @@ namespace App\Controller;
 use App\Domain\Dto\KeysQuery;
 use App\Domain\Dto\RecallRequest;
 use App\Domain\Dto\RememberRequest;
+use App\Domain\Dto\ReviseRequest;
 use App\Service\MemoryService;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -143,12 +144,46 @@ final class MemoryController extends AbstractController
     }
 
     /**
+     * Retire or destroy individual sentences, addressed by their text.
+     *
+     * `POST` rather than `DELETE` even when every item is a `purge`: the address
+     * of the thing being changed is the *body* (a sentence's text), not the URL,
+     * and a `DELETE` with a request body is refused outright by plenty of HTTP
+     * clients and proxies. A key still identifies the collection, so this is a
+     * POST to a collection resource — the shape that survives the wire.
+     *
+     * A two-tool API (`revise`/`remember`) is also why this is not a flag on
+     * `remember`: the selection semantics here (match kinds, tier scope, pinned
+     * skipping, the multi-match refusal) have no counterpart in a write, and
+     * folding them together would make both harder to reason about.
+     */
+    #[Route('/api/revise', name: 'api_revise', methods: ['POST'])]
+    public function revise(
+        #[MapRequestPayload(acceptFormat: 'json', mapWhenEmpty: true)] ReviseRequest $payload,
+    ): JsonResponse {
+        try {
+            return new JsonResponse($this->memory->revise($payload->items));
+        } catch (\DomainException $exception) {
+            // The only error `revise` raises on purpose is the ambiguous-purge
+            // refusal, and it is a client-side problem: the pattern needs to be
+            // narrower. 409 would imply a retry could succeed unchanged, which
+            // is exactly what is not true.
+            return new JsonResponse(
+                ['error' => $exception->getMessage(), 'changed' => 0],
+                Response::HTTP_UNPROCESSABLE_ENTITY,
+            );
+        }
+    }
+
+    /**
      * Permanently delete a key.
      *
      * Its own route rather than a flag on a write, mirroring `memory:forget`
-     * being its own command: the only destructive operation in the API should
-     * not be reachable by mistyping a write. `key` is a path segment, not a
-     * query parameter, because it names the resource being destroyed.
+     * being its own command: destroying a key should not be reachable by
+     * mistyping a write. (The other destructive path is `revise` with
+     * `disposition: purge`, likewise a named option and never the default.)
+     * `key` is a path segment, not a query parameter, because it names the
+     * resource being destroyed.
      *
      * The key is resolved through the same escalating match as a read, so
      * `ContextShuttle` deletes what `context-shuttle` names. That is intentional:
