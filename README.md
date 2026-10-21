@@ -88,6 +88,7 @@ The store lives on a volume, so memory outlives the container.
 |---|---|
 | `memory:recall [<key...>]` | Look up keywords, or the most recently written keys |
 | `memory:remember <key> [text]` | Store sentences (prose or explicit `--sentence`) |
+| `memory:revise <key> <text>` | Retire or purge one sentence, selected by its text |
 | `memory:keys [pattern]` | Enumerate the keyspace, with aliases |
 | `memory:stats` | Counts and active trimming budgets |
 | `memory:forget <key>` | Permanently delete a key |
@@ -98,6 +99,13 @@ written keys; no value means the service's default),
 `--latest-depth N` (sentences per key on that read),
 `--pin` (exempt from trimming), `--mode replace` (retire current sentences),
 `--revision N` (write against a revision you read), `--json`.
+
+`memory:revise` takes `--disposition demote|purge` (default `demote`: the
+sentence moves to cold storage and re-stating it brings it back), `--match
+exact|contains|glob`, `--tier hot|cold|any`, `--dry-run`, `--include-pinned`,
+and `--force` (a purge asks before it destroys). It is the way to fix one stale
+detail: `--mode replace` on `memory:remember` retires every hot sentence on the
+key, and `memory:forget` removes the key entirely.
 
 Naming neither a key nor `--latest` is refused, matching the wire — an empty
 recall is a caller bug, not a request for nothing.

@@ -52,6 +52,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a key nothing has touched in months is visible without recalling it. This is
   the key-level age line the spec's open questions asked for.
 
+- **`memory:revise` (and `POST /api/revise`) — retire or purge one sentence, selected
+  by its text.** The missing verb between `--mode replace` and `memory:forget`:
+  `replace` retires every hot sentence on a key, so correcting one stale detail
+  cost every good fact beside it, and `forget` removes the key entirely. Neither
+  could say "this one sentence is no longer true".
+
+  Sentences are addressed by text, not by an id, because `(key, text)` is already
+  the identity the schema enforces (`sha256(text)` scoped to the key). `match`
+  selects how: `exact` compares the whole sentence (case and surrounding
+  whitespace ignored), `contains` takes a substring, and `glob` takes `*` and
+  `?` anchored at both ends, so `*deploy*` is how a word is found anywhere.
+
+  `disposition` defaults to `demote`, the reversible one: the sentence moves to
+  cold, stays retrievable with `--cold`, and is promoted back to hot by simply
+  re-stating it. `purge` destroys and has to be named; it is also **refused when
+  the pattern would match more than one sentence**, since with no ids and no undo
+  an unseen multi-sentence selection is exactly the thing not to guess at.
+  `--dry-run` runs the identical match and reports what it would have changed.
+
+  Reported rather than inferred: a pattern that misses in the requested tier but
+  matches in the other says so in `hint`; pinned sentences are skipped unless
+  `--include-pinned` and are counted in `skipped.pinned` (a pin means "do not
+  trim", and both dispositions trim); and `remaining` gives the post-change
+  per-tier counts, so "did I just empty this key?" needs no second read. The
+  revision is bumped once per call that actually changes something (a miss and a
+  `--dry-run` leave it alone), so a caller holding the old one is flagged
+  backfilled rather than silently overwriting. An empty `text` is refused under
+  every match kind — under `contains` it would match the whole key.
+
 ### Fixed
 
 - **A key with only punctuation, emoji, or non-Latin characters was stored as

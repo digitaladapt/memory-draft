@@ -710,4 +710,230 @@ final class MemoryControllerTest extends WebTestCase
         $body = $this->decode($client->getResponse());
         self::assertSame(8, $body['latest']['count']);
     }
+
+    // ---------------------------------------------------------------------- //
+    // revise
+    // ---------------------------------------------------------------------- //
+
+    /**
+     * The gap this route fills: `remember --mode replace` retires a whole key and
+     * `forget` deletes a whole key, but there was no way to retire *one* sentence.
+     */
+    public function testReviseDemotesOneSentenceAndLeavesTheOthersHot(): void
+    {
+        $client = $this->client();
+        $this->post($client, '/api/remember', [
+            'items' => [['key' => 'deploy', 'sentences' => 'Uses blue-green deploys. Rollback is one command.']],
+        ]);
+
+        $response = $this->post($client, '/api/revise', [
+            'items' => [['key' => 'deploy', 'text' => 'Uses blue-green deploys.']],
+        ]);
+        self::assertResponseIsSuccessful();
+
+        $body = $this->decode($response);
+        self::assertSame(1, $body['changed']);
+        $report = $body['results'][0];
+        self::assertSame('demote', $report['disposition']);
+        self::assertSame(1, $report['matched']);
+        self::assertSame('demoted', $report['entries'][0]['action']);
+
+        // Default recall no longer shows it; a cold read still does.
+        $hot = $this->decode($this->post($client, '/api/recall', ['queries' => [['key' => 'deploy']]]));
+        self::assertSame(['Rollback is one command.'], array_column($hot['hits'][0]['entries'], 'text'));
+
+        $cold = $this->decode($this->post($client, '/api/recall', [
+            'queries' => [['key' => 'deploy', 'includeCold' => true]],
+        ]));
+        self::assertContains(
+            'Uses blue-green deploys.',
+            array_column($cold['hits'][0]['entries'], 'text'),
+        );
+    }
+
+    public function testReviseDefaultsToDemoteAndToExactMatching(): void
+    {
+        $client = $this->client();
+        $this->post($client, '/api/remember', [
+            'items' => [['key' => 'deploy', 'sentences' => 'Uses blue-green deploys.']],
+        ]);
+
+        // A fragment, with no `match` given, must select nothing: the default
+        // being `exact` is what makes a typo harmless rather than catastrophic.
+        $body = $this->decode($this->post($client, '/api/revise', [
+            'items' => [['key' => 'deploy', 'text' => 'blue-green']],
+        ]));
+
+        self::assertSame(0, $body['changed']);
+        self::assertSame('exact', $body['results'][0]['match']);
+    }
+
+    public function testRevisePurgeRemovesOneSentenceButKeepsTheKey(): void
+    {
+        $client = $this->client();
+        $this->post($client, '/api/remember', [
+            'items' => [['key' => 'deploy', 'sentences' => 'Uses blue-green deploys. Rollback is one command.']],
+        ]);
+
+        $body = $this->decode($this->post($client, '/api/revise', [
+            'items' => [['key' => 'deploy', 'text' => 'Rollback is one command.', 'disposition' => 'purge']],
+        ]));
+
+        self::assertSame(1, $body['changed']);
+
+        // The key survives, unlike after `forget`.
+        $client->request('GET', '/api/keys');
+        $keys = array_column($this->decodeList($client->getResponse()), 'key');
+        self::assertContains('deploy', $keys);
+    }
+
+    /**
+     * An ambiguous purge is the one error this route raises on purpose, and it is
+     * a 422 rather than a 409: retrying unchanged cannot help, so the caller has
+     * to narrow the pattern — a different request, not a later one.
+     */
+    public function testReviseRefusesAnAmbiguousPurgeWithA422(): void
+    {
+        $client = $this->client();
+        $this->post($client, '/api/remember', [
+            'items' => [['key' => 'deploy', 'sentences' => 'Uses blue-green deploys. Deploys roll back in one command.']],
+        ]);
+
+        $this->post($client, '/api/revise', [
+            'items' => [['key' => 'deploy', 'text' => 'deploys', 'match' => 'contains', 'disposition' => 'purge']],
+        ]);
+
+        self::assertResponseStatusCodeSame(Response::HTTP_UNPROCESSABLE_ENTITY);
+        $body = $this->decode($client->getResponse());
+        self::assertStringContainsString('matches 2 sentences', (string) $body['error']);
+        self::assertSame(0, $body['changed']);
+
+        // And nothing was destroyed by the refusal.
+        $recall = $this->decode($this->post($client, '/api/recall', ['queries' => [['key' => 'deploy']]]));
+        self::assertCount(2, $recall['hits'][0]['entries']);
+    }
+
+    public function testADryRunPurgeReportsWhatWouldGoAndChangesNothing(): void
+    {
+        $client = $this->client();
+        $this->post($client, '/api/remember', [
+            'items' => [['key' => 'deploy', 'sentences' => 'Uses blue-green deploys. Deploys roll back in one command.']],
+        ]);
+
+        $body = $this->decode($this->post($client, '/api/revise', [
+            'items' => [[
+                'key' => 'deploy',
+                'text' => '*deploys*',
+                'match' => 'glob',
+                'disposition' => 'purge',
+                'dryRun' => true,
+            ]],
+        ]));
+
+        self::assertSame(0, $body['changed']);
+        self::assertSame(2, $body['results'][0]['matched']);
+        self::assertSame(['would_purge', 'would_purge'], array_column($body['results'][0]['entries'], 'action'));
+
+        $recall = $this->decode($this->post($client, '/api/recall', ['queries' => [['key' => 'deploy']]]));
+        self::assertCount(2, $recall['hits'][0]['entries']);
+    }
+
+    public function testReviseBumpsTheRevisionSoTheRecallTokenGoesStale(): void
+    {
+        $client = $this->client();
+        $this->post($client, '/api/remember', [
+            'items' => [['key' => 'deploy', 'sentences' => 'Uses blue-green deploys. Rollback is one command.']],
+        ]);
+
+        $before = $this->decode($this->post($client, '/api/recall', ['queries' => [['key' => 'deploy']]]));
+        $staleRevision = $before['hits'][0]['revision'];
+
+        $this->post($client, '/api/revise', ['items' => [['key' => 'deploy', 'text' => 'Rollback is one command.']]]);
+
+        $after = $this->decode($this->post($client, '/api/recall', ['queries' => [['key' => 'deploy']]]));
+        self::assertGreaterThan($staleRevision, $after['hits'][0]['revision']);
+
+        // The old token now earns a backfill flag rather than a silent overwrite.
+        $write = $this->decode($this->post($client, '/api/remember', [
+            'items' => [['key' => 'deploy', 'sentences' => 'A stale fact.', 'revision' => $staleRevision]],
+        ]));
+        self::assertSame('backfill', $write['results'][0]['intent']);
+    }
+
+    public function testAnEmptyReviseBatchIsRejected(): void
+    {
+        $client = static::createClient();
+        $this->post($client, '/api/revise', ['items' => []]);
+
+        self::assertResponseStatusCodeSame(Response::HTTP_UNPROCESSABLE_ENTITY);
+    }
+
+    public function testAnUnknownDispositionIsRejectedBeforeTheServiceIsEntered(): void
+    {
+        $client = static::createClient();
+        $this->post($client, '/api/revise', ['items' => [['key' => 'deploy', 'text' => 'x', 'disposition' => 'delete']]]);
+
+        self::assertResponseStatusCodeSame(Response::HTTP_UNPROCESSABLE_ENTITY);
+    }
+
+    public function testAnUnknownTierIsRejected(): void
+    {
+        $client = static::createClient();
+        $this->post($client, '/api/revise', ['items' => [['key' => 'deploy', 'text' => 'x', 'tier' => 'lukewarm']]]);
+
+        self::assertResponseStatusCodeSame(Response::HTTP_UNPROCESSABLE_ENTITY);
+    }
+
+    public function testABlankTextIsRejected(): void
+    {
+        // "Revise nothing" is not a no-op request: it is a caller bug, and a
+        // blank pattern under `contains` would match everything.
+        $client = static::createClient();
+        $this->post($client, '/api/revise', ['items' => [['key' => 'deploy', 'text' => '']]]);
+
+        self::assertResponseStatusCodeSame(Response::HTTP_UNPROCESSABLE_ENTITY);
+    }
+
+    /**
+     * Glob is anchored at both ends, so `deploys*` selects sentences that *start*
+     * with it, not sentences that merely contain it. Worth its own test because
+     * the opposite assumption is the intuitive one, and getting it wrong means
+     * selecting fewer sentences than intended — the safe direction, but still a
+     * surprise.
+     */
+    public function testAGlobAnchorsAtBothEndsSoALeadingStarIsRequiredToMatchMidSentence(): void
+    {
+        $client = $this->client();
+        $this->post($client, '/api/remember', [
+            'items' => [['key' => 'deploy', 'sentences' => 'Rollback uses blue-green deploys. Unrelated fact.']],
+        ]);
+
+        // The word is present, but not at the start, so an anchored pattern
+        // misses it entirely.
+        $anchored = $this->decode($this->post($client, '/api/revise', [
+            'items' => [['key' => 'deploy', 'text' => 'deploys*', 'match' => 'glob', 'dryRun' => true]],
+        ]));
+        self::assertSame(0, $anchored['results'][0]['matched']);
+
+        $unanchored = $this->decode($this->post($client, '/api/revise', [
+            'items' => [['key' => 'deploy', 'text' => '*deploys*', 'match' => 'glob', 'dryRun' => true]],
+        ]));
+        self::assertSame(1, $unanchored['results'][0]['matched']);
+    }
+
+    public function testAMissIsA200WithAReportRatherThanAnError(): void
+    {
+        $client = $this->client();
+        $this->post($client, '/api/remember', [
+            'items' => [['key' => 'deploy', 'sentences' => 'Uses blue-green deploys.']],
+        ]);
+
+        $body = $this->decode($this->post($client, '/api/revise', [
+            'items' => [['key' => 'deploy', 'text' => 'never stored']],
+        ]));
+
+        self::assertResponseIsSuccessful();
+        self::assertSame(0, $body['changed']);
+        self::assertSame(0, $body['results'][0]['matched']);
+    }
 }

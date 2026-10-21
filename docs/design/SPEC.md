@@ -425,6 +425,9 @@ constraints are the contract. A blank key, an unknown `mode`, an out-of-range
 memory:recall   [<key...>] [--depth N] [--cold] [--latest[=N]] [--latest-depth N] [--json]
 memory:remember <key> [text] [-s|--sentence ...] [--mode append|replace]
                             [--pin] [--revision N] [--json]
+memory:revise   <key> <text> [-d|--disposition demote|purge] [-m|--match exact|contains|glob]
+                            [-t|--tier hot|cold|any] [--dry-run] [--include-pinned]
+                            [--force] [--json]
 memory:keys     [pattern] [--limit N] [--json]
 memory:stats    [--json]
 memory:forget   <key> [--force]
@@ -437,8 +440,18 @@ defaulting to `false` rather than `null` — Symfony reports `null` for both, so
 `null` default would make a bare `--latest` indistinguishable from no recency
 request at all.
 
-`memory:forget` is a separate command rather than a flag, so the only
-destructive operation cannot be reached by a typo in a write.
+`memory:forget` is a separate command rather than a flag, so destroying a key
+cannot be reached by a typo in a write.
+
+`memory:revise` follows the same rule and for the same reason: it is a command
+of its own, its destructive disposition is a named option (`--disposition
+purge`) rather than the default, and that disposition asks for confirmation
+unless `--force` is given. It addresses sentences by text because text is the
+identity the store already enforces (`sha256(text)` per key); `--match` decides
+whether the text is the whole sentence, a substring, or a glob anchored at both
+ends. A purge that would match more than one sentence is refused rather than
+confirmed, so the ambiguity is resolved by narrowing the pattern or by looking
+first with `--dry-run` — never by answering a prompt.
 
 ### Service
 
@@ -450,6 +463,15 @@ $memory->remember([new RememberItem(key: 'x', sentences: '...', revision: 8)]);
 $memory->keys(pattern: '', limit: 200);
 $memory->stats();
 $memory->forget('x');
+$memory->revise([new ReviseItem(
+    key: 'x',
+    text: 'Uses blue-green deploys.',   // or a pattern, with match: 'glob'
+    disposition: 'demote',               // 'purge' destroys; refused if ambiguous
+    match: 'exact',                      // exact | contains | glob
+    tier: 'hot',                         // hot | cold | any
+    dryRun: false,
+    includePinned: false,
+)]);
 ```
 
 The service clamps `latest` and `depth` itself rather than trusting the edge: it
